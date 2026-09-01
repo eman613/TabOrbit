@@ -1,6 +1,7 @@
 use super::to_wstring;
 
 use anyhow::{anyhow, Result};
+use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::{
     Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE},
@@ -23,11 +24,30 @@ impl SingleInstance {
             .map_err(|err| anyhow!("Fail to setup single instance, {err}"))?;
         let handle =
             if windows::core::Error::from_win32().code() == ERROR_ALREADY_EXISTS.to_hresult() {
+                unsafe {
+                    let _ = CloseHandle(handle);
+                }
                 None
             } else {
                 Some(handle)
             };
         Ok(SingleInstance { handle })
+    }
+
+    pub fn create_wait(name: &str, timeout: Duration) -> Result<Self> {
+        let started = Instant::now();
+        loop {
+            let instance = Self::create(name)?;
+            if instance.is_single() {
+                return Ok(instance);
+            }
+            if started.elapsed() >= timeout {
+                return Err(anyhow!(
+                    "Timed out waiting for the existing TabOrbit instance to exit"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// Returns whether this instance is single.

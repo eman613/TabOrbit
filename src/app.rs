@@ -6,7 +6,8 @@ use crate::startup::Startup;
 use crate::trayicon::TrayIcon;
 use crate::utils::{
     check_error, get_app_icon, get_foreground_window, get_window_user_data, is_iconic_window,
-    is_running_as_admin, list_windows, set_foreground_window, set_window_user_data,
+    is_running_as_admin, list_windows, relaunch_as_admin, set_foreground_window,
+    set_window_user_data,
 };
 
 use anyhow::{anyhow, Result};
@@ -37,6 +38,7 @@ pub const WM_USER_SWITCH_WINDOWS_DONE: u32 = 6021;
 pub const IDM_EXIT: u32 = 1;
 pub const IDM_STARTUP: u32 = 2;
 pub const IDM_CONFIGURE: u32 = 3;
+pub const IDM_RUN_AS_ADMIN: u32 = 4;
 
 pub fn start(config: &Config) -> Result<()> {
     info!("start config={config:?}");
@@ -213,7 +215,7 @@ impl App {
                 if let Some(trayicon) = app.trayicon.as_mut() {
                     let keycode = lparam.0 as u32;
                     if keycode == WM_LBUTTONUP || keycode == WM_RBUTTONUP {
-                        trayicon.show(app.startup.is_enable)?;
+                        trayicon.show(app.startup.is_enable, app.is_admin)?;
                     }
                 }
                 return Ok(LRESULT(0));
@@ -280,6 +282,19 @@ impl App {
                         IDM_CONFIGURE => {
                             if let Err(err) = edit_config_file() {
                                 alert!("{err}");
+                            }
+                        }
+                        IDM_RUN_AS_ADMIN => {
+                            let is_admin = get_app(hwnd)?.is_admin;
+                            if !is_admin {
+                                match relaunch_as_admin() {
+                                    Ok(()) => {
+                                        let app = get_app(hwnd)?;
+                                        unsafe { drop(Box::from_raw(app)) }
+                                        unsafe { PostQuitMessage(0) }
+                                    }
+                                    Err(err) => alert!("{err}"),
+                                }
                             }
                         }
                         _ => {}

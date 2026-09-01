@@ -4,6 +4,7 @@ use anyhow::{anyhow, bail, Result};
 use std::{
     fs::{File, OpenOptions},
     path::Path,
+    time::Duration,
 };
 
 use taborbit::{alert, load_config, start, utils::SingleInstance};
@@ -32,7 +33,12 @@ fn run() -> Result<()> {
         })?;
         simple_logging::log_to(file, config.log_level);
     }
-    let instance = SingleInstance::create("TabOrbitMutex")?;
+    let wait_for_instance = std::env::args().any(|arg| arg == "--wait-for-instance");
+    let instance = if wait_for_instance {
+        SingleInstance::create_wait("TabOrbitMutex", Duration::from_secs(10))?
+    } else {
+        SingleInstance::create("TabOrbitMutex")?
+    };
     if !instance.is_single() {
         bail!("Another instance is running. This instance will abort.")
     }

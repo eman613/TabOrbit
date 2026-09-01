@@ -1,4 +1,4 @@
-use crate::app::{IDM_CONFIGURE, IDM_EXIT, IDM_STARTUP, NAME, WM_USER_TRAYICON};
+use crate::app::{IDM_CONFIGURE, IDM_EXIT, IDM_RUN_AS_ADMIN, IDM_STARTUP, NAME, WM_USER_TRAYICON};
 
 use anyhow::{anyhow, Result};
 use windows::core::{w, PCWSTR};
@@ -12,7 +12,8 @@ use windows::Win32::{
         WindowsAndMessaging::{
             AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, GetCursorPos,
             LookupIconIdFromDirectoryEx, SetForegroundWindow, TrackPopupMenu, HMENU,
-            LR_DEFAULTCOLOR, MF_CHECKED, MF_STRING, MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+            LR_DEFAULTCOLOR, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED,
+            TPM_BOTTOMALIGN, TPM_LEFTALIGN,
         },
     },
 };
@@ -20,6 +21,9 @@ use windows::Win32::{
 const ICON_BYTES: &[u8] = include_bytes!("../assets/icon.ico");
 const TEXT_CONFIGURE: PCWSTR = w!("Configure");
 const TEXT_STARTUP: PCWSTR = w!("Startup");
+const TEXT_PERMISSION_ADMIN: PCWSTR = w!("Permission: Administrator");
+const TEXT_PERMISSION_STANDARD: PCWSTR = w!("Permission: Standard user");
+const TEXT_RUN_AS_ADMIN: PCWSTR = w!("Run as administrator");
 const TEXT_EXIT: PCWSTR = w!("Exit");
 
 pub struct TrayIcon {
@@ -43,7 +47,7 @@ impl TrayIcon {
         unsafe { Shell_NotifyIconW(NIM_MODIFY, &self.data) }.as_bool()
     }
 
-    pub fn show(&mut self, startup: bool) -> Result<()> {
+    pub fn show(&mut self, startup: bool, is_admin: bool) -> Result<()> {
         let hwnd = self.data.hWnd;
         let mut cursor = POINT::default();
         unsafe {
@@ -52,7 +56,7 @@ impl TrayIcon {
                 .map_err(|e| anyhow!("Fail to set foreground window, {}", e))?;
             GetCursorPos(&mut cursor).map_err(|e| anyhow!("Fail to get cursor pos, {}", e))?;
             let hmenu = self
-                .create_menu(startup)
+                .create_menu(startup, is_admin)
                 .map_err(|e| anyhow!("Fail to create menu, {}", e))?;
             TrackPopupMenu(
                 hmenu,
@@ -92,12 +96,30 @@ impl TrayIcon {
         }
     }
 
-    fn create_menu(&mut self, startup: bool) -> Result<HMENU> {
+    fn create_menu(&mut self, startup: bool, is_admin: bool) -> Result<HMENU> {
         let startup_flags = if startup { MF_CHECKED } else { MF_UNCHECKED };
+        let permission_text = if is_admin {
+            TEXT_PERMISSION_ADMIN
+        } else {
+            TEXT_PERMISSION_STANDARD
+        };
+        let run_as_admin_flags = if is_admin {
+            MF_STRING | MF_GRAYED
+        } else {
+            MF_STRING
+        };
         unsafe {
             let hmenu = CreatePopupMenu().map_err(|err| anyhow!("Failed to create menu, {err}"))?;
             AppendMenuW(hmenu, MF_STRING, IDM_CONFIGURE as usize, TEXT_CONFIGURE)?;
             AppendMenuW(hmenu, startup_flags, IDM_STARTUP as usize, TEXT_STARTUP)?;
+            AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null())?;
+            AppendMenuW(hmenu, MF_STRING | MF_GRAYED, 0, permission_text)?;
+            AppendMenuW(
+                hmenu,
+                run_as_admin_flags,
+                IDM_RUN_AS_ADMIN as usize,
+                TEXT_RUN_AS_ADMIN,
+            )?;
             AppendMenuW(hmenu, MF_STRING, IDM_EXIT as usize, TEXT_EXIT)?;
             Ok(hmenu)
         }

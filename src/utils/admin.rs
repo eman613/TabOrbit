@@ -1,6 +1,8 @@
 use super::HandleWrapper;
 
 use anyhow::{anyhow, Result};
+use std::os::windows::ffi::OsStrExt;
+use windows::core::{w, PCWSTR};
 use windows::Win32::{
     Foundation::HANDLE,
     Security::{
@@ -11,6 +13,7 @@ use windows::Win32::{
     System::Threading::{
         GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
     },
+    UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
 };
 
 const SECURITY_MANDATORY_HIGH_RID: u32 = 0x00003000;
@@ -20,6 +23,40 @@ pub fn is_running_as_admin() -> Result<bool> {
     let process = unsafe { GetCurrentProcess() };
     is_elevated(process)
         .map_err(|err| anyhow!("Failed to verify if the program is running as admin, {err}"))
+}
+
+pub fn relaunch_as_admin() -> Result<()> {
+    let exe_path = std::env::current_exe()
+        .map_err(|err| anyhow!("Failed to get current executable path, {err}"))?;
+    info!(
+        "requesting elevated TabOrbit restart: {}",
+        exe_path.display()
+    );
+    let exe_path = exe_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<u16>>();
+    let parameters = w!("--wait-for-instance");
+
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("runas"),
+            PCWSTR(exe_path.as_ptr()),
+            parameters,
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result.0 as isize <= 32 {
+        return Err(anyhow!(
+            "Failed to start elevated TabOrbit instance (ShellExecuteW return code {})",
+            result.0 as isize
+        ));
+    }
+    info!("elevated TabOrbit restart launched");
+    Ok(())
 }
 
 pub fn is_process_elevated(pid: u32) -> Option<bool> {
