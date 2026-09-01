@@ -27,24 +27,13 @@ pub fn draw_badge(
     scale: i32,
     dpi_scale: f64,
 ) {
-    if !should_show(count) || scale <= 0 || dpi_scale <= 0.0 {
+    let Some((left, top, right, bottom, radius)) =
+        badge_bounds(count, icon_left, icon_top, icon_size, scale, dpi_scale)
+    else {
         return;
-    }
-
+    };
     let label = label(count);
-    let supersample_scale = scale as f64;
-    let badge_scale = supersample_scale * dpi_scale;
-    let icon_left = icon_left * scale;
-    let icon_top = icon_top * scale;
-    let icon_size = icon_size * scale;
-    let badge_height = scaled(BADGE_HEIGHT_BASE, badge_scale);
-    let badge_width = badge_width(label.encode_utf16().count(), badge_scale);
-    let offset = scaled(BADGE_OFFSET_BASE, badge_scale);
-    let right = icon_left + icon_size - offset;
-    let left = right - badge_width;
-    let top = icon_top + offset;
-    let bottom = top + badge_height;
-    let radius = scaled(BADGE_RADIUS_BASE, badge_scale);
+    let badge_scale = scale as f64 * dpi_scale;
 
     unsafe {
         let region = CreateRoundRectRgn(left, top, right, bottom, radius, radius);
@@ -104,6 +93,34 @@ pub fn draw_badge(
         }
         let _ = DeleteObject(HGDIOBJ(font.0));
     }
+}
+
+pub fn badge_bounds(
+    count: usize,
+    icon_left: i32,
+    icon_top: i32,
+    icon_size: i32,
+    scale: i32,
+    dpi_scale: f64,
+) -> Option<(i32, i32, i32, i32, i32)> {
+    if !should_show(count) || scale <= 0 || dpi_scale <= 0.0 || icon_size <= 0 {
+        return None;
+    }
+
+    let label = label(count);
+    let badge_scale = scale as f64 * dpi_scale;
+    let icon_left = icon_left.checked_mul(scale)?;
+    let icon_top = icon_top.checked_mul(scale)?;
+    let icon_size = icon_size.checked_mul(scale)?;
+    let badge_height = scaled(BADGE_HEIGHT_BASE, badge_scale);
+    let badge_width = badge_width(label.encode_utf16().count(), badge_scale);
+    let offset = scaled(BADGE_OFFSET_BASE, badge_scale);
+    let right = icon_left.checked_add(icon_size)?.checked_sub(offset)?;
+    let left = right.checked_sub(badge_width)?;
+    let top = icon_top.checked_add(offset)?;
+    let bottom = top.checked_add(badge_height)?;
+    let radius = scaled(BADGE_RADIUS_BASE, badge_scale);
+    Some((left, top, right, bottom, radius))
 }
 
 pub const fn should_show(count: usize) -> bool {
