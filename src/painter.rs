@@ -3,25 +3,28 @@ use crate::badge::draw_badge;
 use crate::utils::{check_error, get_moinitor_rect, is_light_theme, is_win11};
 
 use anyhow::{Context, Result};
+use std::{ffi::c_void, mem};
+use windows::core::{s, w, BOOL};
 use windows::Win32::{
-    Foundation::{COLORREF, HWND, POINT, RECT, SIZE},
+    Foundation::{COLORREF, HWND, POINT, SIZE},
+    Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND},
     Graphics::{
         Gdi::{
-            CreateCompatibleBitmap, CreateCompatibleDC, CreateRoundRectRgn, CreateSolidBrush,
-            DeleteDC, DeleteObject, FillRect, FillRgn, GetDC, ReleaseDC, SelectObject,
-            SetStretchBltMode, StretchBlt, AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION, HALFTONE,
-            HBITMAP, HDC, HPALETTE, SRCCOPY,
+            CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
+            SelectObject, SetStretchBltMode, StretchBlt, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
+            BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HALFTONE, HBITMAP, HDC,
+            HPALETTE, SRCCOPY,
         },
         GdiPlus::{
             FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateBitmapFromHBITMAP,
-            GdipCreateFromHDC, GdipCreatePath, GdipCreatePen1, GdipDeleteBrush, GdipDeleteGraphics,
-            GdipDeletePath, GdipDeletePen, GdipDisposeImage, GdipDrawImageRect, GdipFillPath,
-            GdipFillRectangle, GdipGetPenBrushFill, GdipSetInterpolationMode, GdipSetSmoothingMode,
-            GdiplusShutdown, GdiplusStartup, GdiplusStartupInput, GpBitmap, GpBrush, GpGraphics,
-            GpImage, GpPath, GpPen, InterpolationModeHighQualityBicubic, SmoothingModeAntiAlias,
-            Unit,
+            GdipCreateFromHDC, GdipCreatePath, GdipCreateSolidFill, GdipDeleteBrush,
+            GdipDeleteGraphics, GdipDeletePath, GdipDisposeImage, GdipDrawImageRect, GdipFillPath,
+            GdipGraphicsClear, GdipSetInterpolationMode, GdipSetSmoothingMode, GdiplusShutdown,
+            GdiplusStartup, GdiplusStartupInput, GpBitmap, GpBrush, GpGraphics, GpImage, GpPath,
+            GpSolidFill, InterpolationModeHighQualityBicubic, SmoothingModeAntiAlias,
         },
     },
+    System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
     UI::{
         HiDpi::GetDpiForWindow,
         Input::KeyboardAndMouse::SetFocus,
@@ -32,22 +35,22 @@ use windows::Win32::{
     },
 };
 
-pub const BG_DARK_COLOR: u32 = 0x4c4c4c;
-pub const FG_DARK_COLOR: u32 = 0x3b3b3b;
-pub const BG_LIGHT_COLOR: u32 = 0xe0e0e0;
-pub const FG_LIGHT_COLOR: u32 = 0xf2f2f2;
-pub const ALPHA_MASK: u32 = 0xff000000;
+pub const BG_DARK_COLOR: u32 = 0x64191919;
+pub const FG_DARK_COLOR: u32 = 0xc8505050;
+pub const BG_LIGHT_COLOR: u32 = 0x64f4f4f4;
+pub const FG_LIGHT_COLOR: u32 = 0xc8d0d0d0;
 pub const ICON_SIZE_BASE: i32 = 64;
 pub const WINDOW_BORDER_SIZE_BASE: i32 = 10;
 pub const ICON_BORDER_SIZE_BASE: i32 = 4;
 pub const SCALE_FACTOR: i32 = 6;
+const PANEL_CORNER_RADIUS_BASE: i32 = 16;
+const ITEM_CORNER_RADIUS_BASE: i32 = 8;
 
 // GDI Antialiasing Painter
 pub struct GdiAAPainter {
     token: usize,
     hwnd: HWND,
     hdc_screen: HDC,
-    rounded_corner: bool,
     show: bool,
 }
 
@@ -62,13 +65,12 @@ impl GdiAAPainter {
             .context("Failed to initialize GDI+")?;
 
         let hdc_screen = unsafe { GetDC(Some(hwnd)) };
-        let rounded_corner = is_win11();
+        configure_window_visuals(hwnd);
 
         Ok(Self {
             token,
             hwnd,
             hdc_screen,
-            rounded_corner,
             show: false,
         })
     }
@@ -93,20 +95,21 @@ impl GdiAAPainter {
             icon_border,
         );
 
-        let corner_radius = if self.rounded_corner {
-            item_size / 4
-        } else {
-            0
-        };
+        let panel_corner_radius = (PANEL_CORNER_RADIUS_BASE as f64 * dpi_scale) as i32;
+        let item_corner_radius = (ITEM_CORNER_RADIUS_BASE as f64 * dpi_scale) as i32;
 
         let hwnd = self.hwnd;
         let hdc_screen = self.hdc_screen;
 
-        let (fg_color, bg_color) = theme_color(is_light_theme());
+        let (panel_color, selected_color) = theme_color(is_light_theme());
 
         unsafe {
             let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
-            let bitmap_mem = CreateCompatibleBitmap(hdc_screen, width, height);
+            let Some(bitmap_mem) = create_argb_bitmap(hdc_screen, width, height) else {
+                error!("failed to create ARGB panel bitmap");
+                let _ = DeleteDC(hdc_mem);
+                return;
+            };
             SelectObject(hdc_mem, bitmap_mem.into());
 
             let mut graphics = GpGraphics::default();
@@ -114,33 +117,17 @@ impl GdiAAPainter {
             GdipCreateFromHDC(hdc_mem, &mut graphics_ptr as _);
             GdipSetSmoothingMode(graphics_ptr, SmoothingModeAntiAlias);
             GdipSetInterpolationMode(graphics_ptr, InterpolationModeHighQualityBicubic);
-
-            let mut bg_pen = GpPen::default();
-            let mut bg_pen_ptr: *mut GpPen = &mut bg_pen;
-            GdipCreatePen1(ALPHA_MASK | bg_color, 0.0, Unit(0), &mut bg_pen_ptr as _);
-
-            let mut bg_brush = GpBrush::default();
-            let mut bg_brush_ptr: *mut GpBrush = &mut bg_brush;
-            GdipGetPenBrushFill(bg_pen_ptr, &mut bg_brush_ptr as _);
-
-            if self.rounded_corner {
+            GdipGraphicsClear(graphics_ptr, 0);
+            let panel_brush = create_solid_brush(panel_color);
+            if !panel_brush.is_null() {
                 draw_round_rect(
                     graphics_ptr,
-                    bg_brush_ptr,
+                    panel_brush,
                     0.0,
                     0.0,
                     width as f32,
                     height as f32,
-                    corner_radius as f32,
-                );
-            } else {
-                GdipFillRectangle(
-                    graphics_ptr,
-                    bg_brush_ptr,
-                    0.0,
-                    0.0,
-                    width as f32,
-                    height as f32,
+                    panel_corner_radius.min(width.min(height) / 2) as f32,
                 );
             }
 
@@ -153,9 +140,8 @@ impl GdiAAPainter {
                 icon_border,
                 icons_width,
                 icons_height,
-                corner_radius,
-                fg_color,
-                bg_color,
+                item_corner_radius.min(item_size / 2),
+                selected_color,
                 dpi_scale,
             );
 
@@ -195,8 +181,9 @@ impl GdiAAPainter {
             );
 
             GdipDisposeImage(image_ptr);
-            GdipDeleteBrush(bg_brush_ptr);
-            GdipDeletePen(bg_pen_ptr);
+            if !panel_brush.is_null() {
+                GdipDeleteBrush(panel_brush);
+            }
             GdipDeleteGraphics(graphics_ptr);
 
             let _ = DeleteObject(bitmap_icons.into());
@@ -336,8 +323,7 @@ fn draw_icons(
     width: i32,
     height: i32,
     corner_radius: i32,
-    fg_color: u32,
-    bg_color: u32,
+    selected_color: u32,
     dpi_scale: f64,
 ) -> HBITMAP {
     let scaled_width = width * SCALE_FACTOR;
@@ -349,42 +335,39 @@ fn draw_icons(
 
     unsafe {
         let hdc_tmp = CreateCompatibleDC(Some(hdc_screen));
-        let bitmap_tmp = CreateCompatibleBitmap(hdc_screen, width, height);
+        let bitmap_tmp = create_argb_bitmap(hdc_screen, width, height).unwrap_or_default();
         SelectObject(hdc_tmp, bitmap_tmp.into());
 
         let hdc_scaled = CreateCompatibleDC(Some(hdc_screen));
-        let bitmap_scaled = CreateCompatibleBitmap(hdc_screen, scaled_width, scaled_height);
+        let bitmap_scaled =
+            create_argb_bitmap(hdc_screen, scaled_width, scaled_height).unwrap_or_default();
         SelectObject(hdc_scaled, bitmap_scaled.into());
 
-        let fg_brush = CreateSolidBrush(COLORREF(fg_color));
-        let bg_brush = CreateSolidBrush(COLORREF(bg_color));
-
-        let rect = RECT {
-            left: 0,
-            top: 0,
-            right: scaled_width,
-            bottom: scaled_height,
-        };
-
-        FillRect(hdc_scaled, &rect, bg_brush);
+        let mut graphics_scaled: *mut GpGraphics = std::ptr::null_mut();
+        GdipCreateFromHDC(hdc_scaled, &mut graphics_scaled);
+        if !graphics_scaled.is_null() {
+            GdipSetSmoothingMode(graphics_scaled, SmoothingModeAntiAlias);
+            GdipSetInterpolationMode(graphics_scaled, InterpolationModeHighQualityBicubic);
+            GdipGraphicsClear(graphics_scaled, 0);
+        }
+        let selected_brush = create_solid_brush(selected_color);
 
         for (i, entry) in state.apps.iter().enumerate() {
             // draw the box for selected icon
-            if i == state.index {
+            if i == state.index && !selected_brush.is_null() && !graphics_scaled.is_null() {
                 let left = scaled_icon_outer_size * (i as i32);
                 let top = 0;
                 let right = left + scaled_icon_outer_size;
                 let bottom = top + scaled_icon_outer_size;
-                let rgn = CreateRoundRectRgn(
-                    left,
-                    top,
-                    right,
-                    bottom,
-                    scaled_corner_radius,
-                    scaled_corner_radius,
+                draw_round_rect(
+                    graphics_scaled,
+                    selected_brush,
+                    left as f32,
+                    top as f32,
+                    right as f32,
+                    bottom as f32,
+                    scaled_corner_radius as f32,
                 );
-                let _ = FillRgn(hdc_scaled, rgn, fg_brush);
-                let _ = DeleteObject(rgn.into());
             }
 
             let cx = scaled_border_size + scaled_icon_outer_size * (i as i32);
@@ -410,6 +393,12 @@ fn draw_icons(
             );
         }
 
+        if !graphics_scaled.is_null() {
+            GdipDeleteGraphics(graphics_scaled);
+        }
+        if !selected_brush.is_null() {
+            GdipDeleteBrush(selected_brush);
+        }
         SetStretchBltMode(hdc_tmp, HALFTONE);
         let _ = StretchBlt(
             hdc_tmp,
@@ -424,15 +413,106 @@ fn draw_icons(
             scaled_height,
             SRCCOPY,
         );
-
-        let _ = DeleteObject(fg_brush.into());
-        let _ = DeleteObject(bg_brush.into());
         let _ = DeleteObject(bitmap_scaled.into());
         let _ = DeleteDC(hdc_scaled);
         let _ = DeleteDC(hdc_tmp);
 
         bitmap_tmp
     }
+}
+
+fn create_argb_bitmap(hdc: HDC, width: i32, height: i32) -> Option<HBITMAP> {
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+
+    let bitmap_info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits: *mut c_void = std::ptr::null_mut();
+    unsafe { CreateDIBSection(Some(hdc), &bitmap_info, DIB_RGB_COLORS, &mut bits, None, 0).ok() }
+}
+
+unsafe fn create_solid_brush(color: u32) -> *mut GpBrush {
+    let mut solid_fill: *mut GpSolidFill = std::ptr::null_mut();
+    if GdipCreateSolidFill(color, &mut solid_fill) != windows::Win32::Graphics::GdiPlus::Status(0) {
+        return std::ptr::null_mut();
+    }
+    solid_fill as *mut GpBrush
+}
+
+#[repr(C)]
+struct AccentPolicy {
+    accent_state: u32,
+    accent_flags: u32,
+    gradient_color: u32,
+    animation_id: u32,
+}
+
+#[repr(C)]
+struct WindowCompositionAttributeData {
+    attribute: u32,
+    data: *mut c_void,
+    data_size: usize,
+}
+
+type SetWindowCompositionAttributeFn =
+    unsafe extern "system" fn(HWND, *mut WindowCompositionAttributeData) -> BOOL;
+
+fn configure_window_visuals(hwnd: HWND) {
+    if is_win11() {
+        let preference = DWMWCP_ROUND;
+        let result = unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &preference as *const _ as *const c_void,
+                mem::size_of_val(&preference) as u32,
+            )
+        };
+        if let Err(err) = result {
+            debug!("DWM rounded corner unavailable: {err}");
+        }
+    }
+
+    if enable_blur(hwnd) {
+        debug!("window blur enabled");
+    } else {
+        debug!("window blur unavailable; using translucent surface");
+    }
+}
+
+fn enable_blur(hwnd: HWND) -> bool {
+    let Ok(user32) = (unsafe { GetModuleHandleW(w!("user32.dll")) }) else {
+        return false;
+    };
+    let Some(procedure) = (unsafe { GetProcAddress(user32, s!("SetWindowCompositionAttribute")) })
+    else {
+        return false;
+    };
+    let set_window_composition_attribute: SetWindowCompositionAttributeFn =
+        unsafe { mem::transmute(procedure) };
+    let mut policy = AccentPolicy {
+        accent_state: 3,
+        accent_flags: 0,
+        gradient_color: 0,
+        animation_id: 0,
+    };
+    let mut data = WindowCompositionAttributeData {
+        attribute: 19,
+        data: &mut policy as *mut _ as *mut c_void,
+        data_size: mem::size_of_val(&policy),
+    };
+    unsafe { set_window_composition_attribute(hwnd, &mut data).as_bool() }
 }
 
 fn get_dpi_scale(hwnd: HWND) -> f64 {
