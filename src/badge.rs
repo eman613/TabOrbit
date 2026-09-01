@@ -149,7 +149,7 @@ const fn badge_width(char_count: usize, scale: f64) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{label, should_show};
+    use super::{badge_bounds, label, should_show};
 
     #[test]
     fn badge_visibility_uses_filtered_window_count() {
@@ -165,5 +165,18 @@ mod tests {
         assert_eq!(label(10), "10");
         assert_eq!(label(99), "99");
         assert_eq!(label(100), "99+");
+    }
+
+    #[test]
+    fn badge_bounds_keep_round_corner_dimensions() {
+        let single_digit = badge_bounds(2, 0, 0, 64, 1, 1.0).unwrap();
+        assert_eq!(single_digit.2 - single_digit.0, 20);
+        assert_eq!(single_digit.3 - single_digit.1, 20);
+        assert_eq!(single_digit.4, 10);
+
+        let capped_count = badge_bounds(100, 0, 0, 64, 1, 1.0).unwrap();
+        assert_eq!(capped_count.2 - capped_count.0, 30);
+        assert_eq!(capped_count.3 - capped_count.1, 20);
+        assert_eq!(capped_count.4, 10);
     }
 }

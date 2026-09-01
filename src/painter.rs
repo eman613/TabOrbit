@@ -406,7 +406,7 @@ fn draw_icons(
                 SCALE_FACTOR,
                 dpi_scale,
             );
-            if let Some((left, top, right, bottom, _)) = badge_bounds(
+            if let Some((left, top, right, bottom, radius)) = badge_bounds(
                 entry.window_count,
                 icon_border + (icon_size + icon_border * 2) * (i as i32),
                 icon_border,
@@ -414,7 +414,7 @@ fn draw_icons(
                 SCALE_FACTOR,
                 dpi_scale,
             ) {
-                set_alpha_rect(
+                set_alpha_round_rect(
                     bitmap_scaled.bits,
                     scaled_width,
                     scaled_height,
@@ -422,6 +422,7 @@ fn draw_icons(
                     top,
                     right,
                     bottom,
+                    radius,
                 );
             }
         }
@@ -446,7 +447,8 @@ struct ArgbBitmap {
     bits: *mut c_void,
 }
 
-fn set_alpha_rect(
+#[allow(clippy::too_many_arguments)]
+fn set_alpha_round_rect(
     bits: *mut c_void,
     bitmap_width: i32,
     bitmap_height: i32,
@@ -454,6 +456,7 @@ fn set_alpha_rect(
     top: i32,
     right: i32,
     bottom: i32,
+    ellipse_width: i32,
 ) {
     if bits.is_null() || bitmap_width <= 0 || bitmap_height <= 0 {
         return;
@@ -462,6 +465,10 @@ fn set_alpha_rect(
     let right = right.clamp(left, bitmap_width);
     let top = top.clamp(0, bitmap_height);
     let bottom = bottom.clamp(top, bitmap_height);
+    let width = right - left;
+    let height = bottom - top;
+    let ellipse_width = ellipse_width.clamp(0, width.min(height));
+    let ellipse_width_squared = i64::from(ellipse_width) * i64::from(ellipse_width);
     unsafe {
         let pixels = std::slice::from_raw_parts_mut(
             bits as *mut u8,
@@ -470,7 +477,29 @@ fn set_alpha_rect(
         for y in top..bottom {
             let row_start = y as usize * bitmap_width as usize * 4;
             for x in left..right {
-                pixels[row_start + x as usize * 4 + 3] = 255;
+                let x2 = 2 * (x - left) + 1;
+                let y2 = 2 * (y - top) + 1;
+                let dx = if x2 < ellipse_width {
+                    ellipse_width - x2
+                } else if x2 > 2 * width - ellipse_width {
+                    x2 - (2 * width - ellipse_width)
+                } else {
+                    0
+                };
+                let dy = if y2 < ellipse_width {
+                    ellipse_width - y2
+                } else if y2 > 2 * height - ellipse_width {
+                    y2 - (2 * height - ellipse_width)
+                } else {
+                    0
+                };
+                let inside = dx == 0
+                    || dy == 0
+                    || i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy)
+                        <= ellipse_width_squared;
+                if inside {
+                    pixels[row_start + x as usize * 4 + 3] = 255;
+                }
             }
         }
     }
