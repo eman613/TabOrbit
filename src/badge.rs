@@ -1,0 +1,152 @@
+use windows::Win32::{
+    Foundation::{COLORREF, RECT},
+    Graphics::Gdi::{
+        CreateFontW, CreateRoundRectRgn, DeleteObject, DrawTextW, FillRgn, SelectObject, SetBkMode,
+        SetTextColor, ANTIALIASED_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
+        DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FF_DONTCARE, FW_SEMIBOLD,
+        OUT_TT_ONLY_PRECIS, TRANSPARENT,
+    },
+    Graphics::Gdi::{HDC, HGDIOBJ},
+};
+
+const BADGE_HEIGHT_BASE: i32 = 20;
+const BADGE_OFFSET_BASE: i32 = 2;
+const BADGE_RADIUS_BASE: i32 = 10;
+const BADGE_FONT_SIZE_BASE: i32 = 11;
+const BADGE_SINGLE_WIDTH_BASE: i32 = 20;
+const BADGE_EXTRA_WIDTH_PER_CHAR_BASE: i32 = 5;
+const BADGE_BACKGROUND: u32 = 0x00617285;
+const BADGE_FOREGROUND: u32 = 0x00abc0d6;
+
+pub fn draw_badge(
+    hdc: HDC,
+    count: usize,
+    icon_left: i32,
+    icon_top: i32,
+    icon_size: i32,
+    scale: i32,
+    dpi_scale: f64,
+) {
+    if !should_show(count) || scale <= 0 || dpi_scale <= 0.0 {
+        return;
+    }
+
+    let label = label(count);
+    let supersample_scale = scale as f64;
+    let badge_scale = supersample_scale * dpi_scale;
+    let icon_left = icon_left * scale;
+    let icon_top = icon_top * scale;
+    let icon_size = icon_size * scale;
+    let badge_height = scaled(BADGE_HEIGHT_BASE, badge_scale);
+    let badge_width = badge_width(label.encode_utf16().count(), badge_scale);
+    let offset = scaled(BADGE_OFFSET_BASE, badge_scale);
+    let right = icon_left + icon_size - offset;
+    let left = right - badge_width;
+    let top = icon_top + offset;
+    let bottom = top + badge_height;
+    let radius = scaled(BADGE_RADIUS_BASE, badge_scale);
+
+    unsafe {
+        let region = CreateRoundRectRgn(left, top, right, bottom, radius, radius);
+        if region.0.is_null() {
+            return;
+        }
+        let brush = windows::Win32::Graphics::Gdi::CreateSolidBrush(COLORREF(BADGE_BACKGROUND));
+        if !brush.0.is_null() {
+            let _ = FillRgn(hdc, region, brush);
+            let _ = DeleteObject(brush.into());
+        }
+        let _ = DeleteObject(region.into());
+
+        let font = CreateFontW(
+            -scaled(BADGE_FONT_SIZE_BASE, badge_scale),
+            0,
+            0,
+            0,
+            FW_SEMIBOLD.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_TT_ONLY_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            ANTIALIASED_QUALITY,
+            DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
+            windows::core::w!("Segoe UI"),
+        );
+        if font.0.is_null() {
+            return;
+        }
+
+        let old_font = SelectObject(hdc, font.into());
+        let old_mode = SetBkMode(hdc, TRANSPARENT);
+        let old_color = SetTextColor(hdc, COLORREF(BADGE_FOREGROUND));
+        let mut rect = RECT {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        let mut text = label.encode_utf16().collect::<Vec<u16>>();
+        let _ = DrawTextW(
+            hdc,
+            &mut text,
+            &mut rect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+        let _ = SetTextColor(hdc, old_color);
+        let _ = SetBkMode(
+            hdc,
+            windows::Win32::Graphics::Gdi::BACKGROUND_MODE(old_mode as u32),
+        );
+        if !old_font.0.is_null() {
+            let _ = SelectObject(hdc, old_font);
+        }
+        let _ = DeleteObject(HGDIOBJ(font.0));
+    }
+}
+
+pub const fn should_show(count: usize) -> bool {
+    count > 1
+}
+
+pub fn label(count: usize) -> String {
+    match count {
+        0..=1 => String::new(),
+        2..=99 => count.to_string(),
+        _ => "99+".to_string(),
+    }
+}
+
+const fn scaled(value: i32, scale: f64) -> i32 {
+    (value as f64 * scale).round() as i32
+}
+
+const fn badge_width(char_count: usize, scale: f64) -> i32 {
+    scaled(
+        BADGE_SINGLE_WIDTH_BASE
+            + BADGE_EXTRA_WIDTH_PER_CHAR_BASE * char_count.saturating_sub(1) as i32,
+        scale,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{label, should_show};
+
+    #[test]
+    fn badge_visibility_uses_filtered_window_count() {
+        assert!(!should_show(0));
+        assert!(!should_show(1));
+        assert!(should_show(2));
+    }
+
+    #[test]
+    fn badge_label_caps_at_99() {
+        assert_eq!(label(2), "2");
+        assert_eq!(label(9), "9");
+        assert_eq!(label(10), "10");
+        assert_eq!(label(99), "99");
+        assert_eq!(label(100), "99+");
+    }
+}

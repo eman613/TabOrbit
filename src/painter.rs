@@ -1,4 +1,5 @@
 use crate::app::SwitchAppsState;
+use crate::badge::draw_badge;
 use crate::utils::{check_error, get_moinitor_rect, is_light_theme, is_win11};
 
 use anyhow::{Context, Result};
@@ -155,6 +156,7 @@ impl GdiAAPainter {
                 corner_radius,
                 fg_color,
                 bg_color,
+                dpi_scale,
             );
 
             let mut bitmap = GpBitmap::default();
@@ -336,6 +338,7 @@ fn draw_icons(
     corner_radius: i32,
     fg_color: u32,
     bg_color: u32,
+    dpi_scale: f64,
 ) -> HBITMAP {
     let scaled_width = width * SCALE_FACTOR;
     let scaled_height = height * SCALE_FACTOR;
@@ -365,7 +368,7 @@ fn draw_icons(
 
         FillRect(hdc_scaled, &rect, bg_brush);
 
-        for (i, (icon, _)) in state.apps.iter().enumerate() {
+        for (i, entry) in state.apps.iter().enumerate() {
             // draw the box for selected icon
             if i == state.index {
                 let left = scaled_icon_outer_size * (i as i32);
@@ -389,12 +392,21 @@ fn draw_icons(
                 hdc_scaled,
                 cx,
                 scaled_border_size,
-                *icon,
+                entry.icon,
                 scaled_icon_inner_size,
                 scaled_icon_inner_size,
                 0,
                 None,
                 DI_NORMAL,
+            );
+            draw_badge(
+                hdc_scaled,
+                entry.window_count,
+                icon_border + (icon_size + icon_border * 2) * (i as i32),
+                icon_border,
+                icon_size,
+                SCALE_FACTOR,
+                dpi_scale,
             );
         }
 
