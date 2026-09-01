@@ -1,0 +1,72 @@
+# Visual Studio 用户特定文件
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# 编译输出
+/target/
+/.cargo/
+bin/
+obj/
+out/
+tmp/
+Debug/
+Release/
+ScrcpyPro.Tests/TestResults/
+*.exe
+*.dll
+*.pdb
+
+# 依赖包（NuGet）
+packages/
+*.nupkg
+
+# .NET Core / .NET 5+ 发布
+publish/
+
+# 本地缓存（AI 工具）
+.passoff/
+.claude/
+.cursor/
+.codex/
+.gemini/
+.agent-rules/
+
+# 本地文档与 Agent 指令
+docs/
+doc/
+AGENTS.md
+AGENT.md
+CLAUDE.md
+Claude.md
+*.md
+*.markdown
+*.rst
+*.adoc
+*.txt
+*.rtf
+*.pdf
+*.doc
+*.docx
+*.html
+*.htm
+
+# 发布合规文件例外
+!LICENSE
+!LICENSE.*
+!NOTICE
+!NOTICE.*
+!**/LICENSE
+!**/LICENSE.*
+!**/NOTICE
+!**/NOTICE.*
+!Fonts/OFL.txt
+
+# 日志文件
+*.log
+*.tmp
+
+# 系统文件
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+    - '*'
+  push:
+    branches:
+    - main
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  all:
+    name: All
+
+    strategy:
+      matrix:
+        target:
+        - x86_64-pc-windows-msvc
+        include:
+        - target: x86_64-pc-windows-msvc
+          os: windows-latest
+
+    runs-on: ${{matrix.os}}
+
+    env:
+      RUSTFLAGS: --deny warnings
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install Rust Toolchain Components
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Test
+      run: cargo test --target=${{ matrix.target }} --all
+
+    - name: Clippy
+      run: cargo clippy --all --all-targets
+
+    - name: Format
+      run: cargo fmt --all --check
