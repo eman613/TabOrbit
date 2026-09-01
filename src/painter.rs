@@ -10,18 +10,17 @@ use windows::Win32::{
     Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND},
     Graphics::{
         Gdi::{
-            CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
-            SelectObject, SetStretchBltMode, StretchBlt, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
-            BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HALFTONE, HBITMAP, HDC,
-            HPALETTE, SRCCOPY,
+            AlphaBlend, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC,
+            ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER,
+            BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC,
         },
         GdiPlus::{
-            FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateBitmapFromHBITMAP,
-            GdipCreateFromHDC, GdipCreatePath, GdipCreateSolidFill, GdipDeleteBrush,
-            GdipDeleteGraphics, GdipDeletePath, GdipDisposeImage, GdipDrawImageRect, GdipFillPath,
-            GdipGraphicsClear, GdipSetInterpolationMode, GdipSetSmoothingMode, GdiplusShutdown,
-            GdiplusStartup, GdiplusStartupInput, GpBitmap, GpBrush, GpGraphics, GpImage, GpPath,
-            GpSolidFill, InterpolationModeHighQualityBicubic, SmoothingModeAntiAlias,
+            FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateFromHDC,
+            GdipCreatePath, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics,
+            GdipDeletePath, GdipFillPath, GdipGraphicsClear, GdipSetInterpolationMode,
+            GdipSetSmoothingMode, GdiplusShutdown, GdiplusStartup, GdiplusStartupInput, GpBrush,
+            GpGraphics, GpPath, GpSolidFill, InterpolationModeHighQualityBicubic,
+            SmoothingModeAntiAlias,
         },
     },
     System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
@@ -145,19 +144,33 @@ impl GdiAAPainter {
                 dpi_scale,
             );
 
-            let mut bitmap = GpBitmap::default();
-            let mut bitmap_ptr: *mut GpBitmap = &mut bitmap as _;
-            GdipCreateBitmapFromHBITMAP(bitmap_icons, HPALETTE::default(), &mut bitmap_ptr as _);
-
-            let image_ptr: *mut GpImage = bitmap_ptr as *mut GpImage;
-            GdipDrawImageRect(
-                graphics_ptr,
-                image_ptr,
-                border_size as f32,
-                border_size as f32,
-                icons_width as f32,
-                icons_height as f32,
-            );
+            if !bitmap_icons.0.is_null() {
+                let hdc_icons = CreateCompatibleDC(Some(hdc_screen));
+                let old_icons = SelectObject(hdc_icons, bitmap_icons.into());
+                let icon_blend = BLENDFUNCTION {
+                    BlendOp: AC_SRC_OVER as _,
+                    SourceConstantAlpha: 255,
+                    AlphaFormat: AC_SRC_ALPHA as _,
+                    ..Default::default()
+                };
+                let _ = AlphaBlend(
+                    hdc_mem,
+                    border_size,
+                    border_size,
+                    icons_width,
+                    icons_height,
+                    hdc_icons,
+                    0,
+                    0,
+                    icons_width * SCALE_FACTOR,
+                    icons_height * SCALE_FACTOR,
+                    icon_blend,
+                );
+                if !old_icons.0.is_null() {
+                    let _ = SelectObject(hdc_icons, old_icons);
+                }
+                let _ = DeleteDC(hdc_icons);
+            }
 
             let blend = BLENDFUNCTION {
                 BlendOp: AC_SRC_OVER as _,
@@ -180,7 +193,6 @@ impl GdiAAPainter {
                 ULW_ALPHA,
             );
 
-            GdipDisposeImage(image_ptr);
             if !panel_brush.is_null() {
                 GdipDeleteBrush(panel_brush);
             }
@@ -334,10 +346,6 @@ fn draw_icons(
     let scaled_icon_outer_size = scaled_icon_inner_size + scaled_border_size * 2;
 
     unsafe {
-        let hdc_tmp = CreateCompatibleDC(Some(hdc_screen));
-        let bitmap_tmp = create_argb_bitmap(hdc_screen, width, height).unwrap_or_default();
-        SelectObject(hdc_tmp, bitmap_tmp.into());
-
         let hdc_scaled = CreateCompatibleDC(Some(hdc_screen));
         let bitmap_scaled =
             create_argb_bitmap(hdc_screen, scaled_width, scaled_height).unwrap_or_default();
@@ -399,25 +407,9 @@ fn draw_icons(
         if !selected_brush.is_null() {
             GdipDeleteBrush(selected_brush);
         }
-        SetStretchBltMode(hdc_tmp, HALFTONE);
-        let _ = StretchBlt(
-            hdc_tmp,
-            0,
-            0,
-            width,
-            height,
-            Some(hdc_scaled),
-            0,
-            0,
-            scaled_width,
-            scaled_height,
-            SRCCOPY,
-        );
-        let _ = DeleteObject(bitmap_scaled.into());
         let _ = DeleteDC(hdc_scaled);
-        let _ = DeleteDC(hdc_tmp);
 
-        bitmap_tmp
+        bitmap_scaled
     }
 }
 
@@ -425,6 +417,9 @@ fn create_argb_bitmap(hdc: HDC, width: i32, height: i32) -> Option<HBITMAP> {
     if width <= 0 || height <= 0 {
         return None;
     }
+    let byte_len = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
 
     let bitmap_info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
@@ -439,7 +434,19 @@ fn create_argb_bitmap(hdc: HDC, width: i32, height: i32) -> Option<HBITMAP> {
         ..Default::default()
     };
     let mut bits: *mut c_void = std::ptr::null_mut();
-    unsafe { CreateDIBSection(Some(hdc), &bitmap_info, DIB_RGB_COLORS, &mut bits, None, 0).ok() }
+    let bitmap = unsafe {
+        CreateDIBSection(Some(hdc), &bitmap_info, DIB_RGB_COLORS, &mut bits, None, 0).ok()?
+    };
+    if bits.is_null() {
+        unsafe {
+            let _ = DeleteObject(bitmap.into());
+        }
+        return None;
+    }
+    unsafe {
+        std::ptr::write_bytes(bits, 0, byte_len);
+    }
+    Some(bitmap)
 }
 
 unsafe fn create_solid_brush(color: u32) -> *mut GpBrush {
