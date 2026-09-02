@@ -143,6 +143,7 @@ impl GdiAAPainter {
                 icons_height,
                 item_corner_radius.min(item_size / 2),
                 selected_color,
+                panel_color,
                 dpi_scale,
             ) else {
                 error!("failed to create ARGB icon bitmap");
@@ -343,6 +344,7 @@ fn draw_icons(
     height: i32,
     corner_radius: i32,
     selected_color: u32,
+    transparent_color: u32,
     dpi_scale: f64,
 ) -> Option<ArgbBitmap> {
     let scaled_width = width * SCALE_FACTOR;
@@ -351,6 +353,8 @@ fn draw_icons(
     let scaled_border_size = icon_border * SCALE_FACTOR;
     let scaled_icon_inner_size = icon_size * SCALE_FACTOR;
     let scaled_icon_outer_size = scaled_icon_inner_size + scaled_border_size * 2;
+    let transparent_rgb = transparent_color & 0x00ff_ffff;
+    debug!("icon surface transparent RGB: {transparent_rgb:#08x}");
 
     unsafe {
         let hdc_scaled = CreateCompatibleDC(Some(hdc_screen));
@@ -363,7 +367,7 @@ fn draw_icons(
         if !graphics_scaled.is_null() {
             GdipSetSmoothingMode(graphics_scaled, SmoothingModeAntiAlias);
             GdipSetInterpolationMode(graphics_scaled, InterpolationModeHighQualityBicubic);
-            GdipGraphicsClear(graphics_scaled, 0);
+            GdipGraphicsClear(graphics_scaled, transparent_rgb);
         }
         let selected_brush = create_solid_brush(selected_color);
 
