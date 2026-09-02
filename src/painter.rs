@@ -15,12 +15,12 @@ use windows::Win32::{
             BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC,
         },
         GdiPlus::{
-            FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateBitmapFromScan0,
+            FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateBitmapFromHICON,
             GdipCreateFromHDC, GdipCreatePath, GdipCreateSolidFill, GdipDeleteBrush,
             GdipDeleteGraphics, GdipDeletePath, GdipDisposeImage, GdipDrawImageRect, GdipFillPath,
             GdipGraphicsClear, GdipSetInterpolationMode, GdipSetSmoothingMode, GdiplusShutdown,
-            GdiplusStartup, GdiplusStartupInput, GpBrush, GpGraphics, GpPath, GpSolidFill,
-            InterpolationModeHighQualityBicubic, SmoothingModeAntiAlias,
+            GdiplusStartup, GdiplusStartupInput, GpBitmap, GpBrush, GpGraphics, GpImage, GpPath,
+            GpSolidFill, InterpolationModeHighQualityBicubic, SmoothingModeAntiAlias,
         },
     },
     System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
@@ -28,8 +28,7 @@ use windows::Win32::{
         HiDpi::GetDpiForWindow,
         Input::KeyboardAndMouse::SetFocus,
         WindowsAndMessaging::{
-            DrawIconEx, GetCursorPos, ShowWindow, UpdateLayeredWindow, DI_NORMAL, SW_HIDE, SW_SHOW,
-            ULW_ALPHA,
+            GetCursorPos, ShowWindow, UpdateLayeredWindow, SW_HIDE, SW_SHOW, ULW_ALPHA,
         },
     },
 };
@@ -41,10 +40,8 @@ pub const FG_LIGHT_COLOR: u32 = 0xc8d0d0d0;
 pub const ICON_SIZE_BASE: i32 = 64;
 pub const WINDOW_BORDER_SIZE_BASE: i32 = 10;
 pub const ICON_BORDER_SIZE_BASE: i32 = 4;
-pub const SCALE_FACTOR: i32 = 2;
 const PANEL_CORNER_RADIUS_BASE: i32 = 16;
 const ITEM_CORNER_RADIUS_BASE: i32 = 8;
-const PIXEL_FORMAT_32BPP_ARGB: i32 = 0x26200a;
 
 // GDI Antialiasing Painter
 pub struct GdiAAPainter {
@@ -132,61 +129,25 @@ impl GdiAAPainter {
                 );
             }
 
-            let icons_width = item_size * state.apps.len() as i32;
-            let icons_height = item_size;
-            let Some(bitmap_icons) = draw_icons(
+            draw_icons(
+                graphics_ptr,
                 state,
-                hdc_screen,
-                icon_size,
+                border_size,
                 icon_border,
-                icons_width,
-                icons_height,
+                icon_size,
+                item_size,
                 item_corner_radius.min(item_size / 2),
                 selected_color,
-                panel_color,
-            ) else {
-                error!("failed to create ARGB icon bitmap");
-                if !panel_brush.is_null() {
-                    GdipDeleteBrush(panel_brush);
-                }
-                GdipDeleteGraphics(graphics_ptr);
-                let _ = DeleteObject(bitmap_mem.into());
-                let _ = DeleteDC(hdc_mem);
-                return;
-            };
-
-            let mut bitmap_ptr = std::ptr::null_mut();
-            let status = GdipCreateBitmapFromScan0(
-                icons_width * SCALE_FACTOR,
-                icons_height * SCALE_FACTOR,
-                icons_width * SCALE_FACTOR * 4,
-                PIXEL_FORMAT_32BPP_ARGB,
-                Some(bitmap_icons.bits as *const u8),
-                &mut bitmap_ptr,
             );
-            if status != windows::Win32::Graphics::GdiPlus::Status(0) {
-                error!("failed to create GDI+ icon image: status={status:?}");
-            } else {
-                let image_ptr = bitmap_ptr as *mut windows::Win32::Graphics::GdiPlus::GpImage;
-                GdipDrawImageRect(
-                    graphics_ptr,
-                    image_ptr,
-                    border_size as f32,
-                    border_size as f32,
-                    icons_width as f32,
-                    icons_height as f32,
-                );
-                GdipDisposeImage(image_ptr);
-                draw_badges(
-                    graphics_ptr,
-                    state,
-                    border_size,
-                    icon_border,
-                    icon_size,
-                    item_size,
-                    dpi_scale,
-                );
-            }
+            draw_badges(
+                graphics_ptr,
+                state,
+                border_size,
+                icon_border,
+                icon_size,
+                item_size,
+                dpi_scale,
+            );
             premultiply_alpha(panel_surface.bits, width, height);
 
             let blend = BLENDFUNCTION {
@@ -217,7 +178,6 @@ impl GdiAAPainter {
                 GdipDeleteGraphics(graphics_ptr);
             }
 
-            let _ = DeleteObject(bitmap_icons.bitmap.into());
             let _ = DeleteObject(bitmap_mem.into());
             let _ = DeleteDC(hdc_mem);
         }
@@ -347,90 +307,64 @@ unsafe fn draw_round_rect(
 
 #[allow(clippy::too_many_arguments)]
 fn draw_icons(
+    graphics: *mut GpGraphics,
     state: &SwitchAppsState,
-    hdc_screen: HDC,
-    icon_size: i32,
+    border_size: i32,
     icon_border: i32,
-    width: i32,
-    height: i32,
+    icon_size: i32,
+    item_size: i32,
     corner_radius: i32,
     selected_color: u32,
-    transparent_color: u32,
-) -> Option<ArgbBitmap> {
-    let scaled_width = width * SCALE_FACTOR;
-    let scaled_height = height * SCALE_FACTOR;
-    let scaled_corner_radius = corner_radius * SCALE_FACTOR;
-    let scaled_border_size = icon_border * SCALE_FACTOR;
-    let scaled_icon_inner_size = icon_size * SCALE_FACTOR;
-    let scaled_icon_outer_size = scaled_icon_inner_size + scaled_border_size * 2;
-    let transparent_rgb = transparent_color & 0x00ff_ffff;
-    debug!("icon surface transparent RGB: {transparent_rgb:#08x}");
+) {
+    if graphics.is_null() || icon_size <= 0 || item_size <= 0 {
+        return;
+    }
 
-    unsafe {
-        let hdc_scaled = CreateCompatibleDC(Some(hdc_screen));
-        let bitmap_scaled = create_argb_bitmap(hdc_screen, scaled_width, scaled_height)?;
-        let bitmap_scaled_handle = bitmap_scaled.bitmap;
-        SelectObject(hdc_scaled, bitmap_scaled.bitmap.into());
-
-        let mut graphics_scaled: *mut GpGraphics = std::ptr::null_mut();
-        GdipCreateFromHDC(hdc_scaled, &mut graphics_scaled);
-        if !graphics_scaled.is_null() {
-            GdipSetSmoothingMode(graphics_scaled, SmoothingModeAntiAlias);
-            GdipSetInterpolationMode(graphics_scaled, InterpolationModeHighQualityBicubic);
-            GdipGraphicsClear(graphics_scaled, 0);
-        }
-        clear_transparent_surface(
-            bitmap_scaled.bits,
-            scaled_width,
-            scaled_height,
-            transparent_rgb,
-        );
-        let selected_brush = create_solid_brush(selected_color);
-
-        for (i, entry) in state.apps.iter().enumerate() {
-            // draw the box for selected icon
-            if i == state.index && !selected_brush.is_null() && !graphics_scaled.is_null() {
-                let left = scaled_icon_outer_size * (i as i32);
-                let top = 0;
-                let right = left + scaled_icon_outer_size;
-                let bottom = top + scaled_icon_outer_size;
+    let selected_brush = unsafe { create_solid_brush(selected_color) };
+    for (i, entry) in state.apps.iter().enumerate() {
+        let item_left = border_size + item_size * i as i32;
+        if i == state.index && !selected_brush.is_null() {
+            unsafe {
                 draw_round_rect(
-                    graphics_scaled,
+                    graphics,
                     selected_brush,
-                    left as f32,
-                    top as f32,
-                    right as f32,
-                    bottom as f32,
-                    scaled_corner_radius as f32,
+                    item_left as f32,
+                    border_size as f32,
+                    (item_left + item_size) as f32,
+                    (border_size + item_size) as f32,
+                    corner_radius.min(item_size / 2) as f32,
                 );
             }
+        }
 
-            let cx = scaled_border_size + scaled_icon_outer_size * (i as i32);
-            let _ = DrawIconEx(
-                hdc_scaled,
-                cx,
-                scaled_border_size,
-                entry.icon,
-                scaled_icon_inner_size,
-                scaled_icon_inner_size,
-                0,
-                None,
-                DI_NORMAL,
+        let mut bitmap_ptr: *mut GpBitmap = std::ptr::null_mut();
+        let status = unsafe { GdipCreateBitmapFromHICON(entry.icon, &mut bitmap_ptr) };
+        if status != windows::Win32::Graphics::GdiPlus::Status(0) || bitmap_ptr.is_null() {
+            debug!("failed to create GDI+ icon bitmap: index={i}, status={status:?}");
+            continue;
+        }
+
+        unsafe {
+            let image_ptr = bitmap_ptr as *mut GpImage;
+            let draw_status = GdipDrawImageRect(
+                graphics,
+                image_ptr,
+                (item_left + icon_border) as f32,
+                (border_size + icon_border) as f32,
+                icon_size as f32,
+                icon_size as f32,
             );
+            if draw_status != windows::Win32::Graphics::GdiPlus::Status(0) {
+                debug!("failed to draw GDI+ icon: index={i}, status={draw_status:?}");
+            }
+            GdipDisposeImage(image_ptr);
         }
+    }
 
-        if !graphics_scaled.is_null() {
-            GdipDeleteGraphics(graphics_scaled);
-        }
-        if !selected_brush.is_null() {
+    if !selected_brush.is_null() {
+        unsafe {
             GdipDeleteBrush(selected_brush);
         }
-        let _ = DeleteDC(hdc_scaled);
-
-        Some(ArgbBitmap {
-            bitmap: bitmap_scaled_handle,
-            bits: bitmap_scaled.bits,
-        })
     }
 }
 
@@ -488,28 +422,6 @@ fn draw_badges(
 struct ArgbBitmap {
     bitmap: HBITMAP,
     bits: *mut c_void,
-}
-
-fn clear_transparent_surface(bits: *mut c_void, bitmap_width: i32, bitmap_height: i32, color: u32) {
-    if bits.is_null() || bitmap_width <= 0 || bitmap_height <= 0 {
-        return;
-    }
-    let blue = (color & 0xff) as u8;
-    let green = ((color >> 8) & 0xff) as u8;
-    let red = ((color >> 16) & 0xff) as u8;
-    unsafe {
-        let pixels = std::slice::from_raw_parts_mut(
-            bits as *mut u8,
-            bitmap_width as usize * bitmap_height as usize * 4,
-        );
-        let (pixel_chunks, _) = pixels.as_chunks_mut::<4>();
-        for pixel in pixel_chunks {
-            pixel[0] = blue;
-            pixel[1] = green;
-            pixel[2] = red;
-            pixel[3] = 0;
-        }
-    }
 }
 
 fn premultiply_alpha(bits: *mut c_void, bitmap_width: i32, bitmap_height: i32) {
