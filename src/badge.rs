@@ -1,12 +1,10 @@
-use windows::Win32::{
-    Foundation::{COLORREF, RECT},
-    Graphics::Gdi::{
-        CreateFontW, CreateRoundRectRgn, DeleteObject, DrawTextW, FillRgn, SelectObject, SetBkMode,
-        SetTextColor, ANTIALIASED_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
-        DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FF_DONTCARE, FW_SEMIBOLD,
-        OUT_TT_ONLY_PRECIS, TRANSPARENT,
-    },
-    Graphics::Gdi::{HDC, HGDIOBJ},
+use windows::core::{w, PCWSTR};
+use windows::Win32::Graphics::GdiPlus::{
+    FontStyleBold, GdipCreateFont, GdipCreateFontFamilyFromName, GdipCreateSolidFill,
+    GdipCreateStringFormat, GdipDeleteBrush, GdipDeleteFont, GdipDeleteFontFamily,
+    GdipDeleteStringFormat, GdipDrawString, GdipSetStringFormatAlign, GdipSetStringFormatLineAlign,
+    GdipSetTextRenderingHint, GpBrush, GpFont, GpFontFamily, GpGraphics, GpSolidFill,
+    GpStringFormat, RectF, StringAlignmentCenter, TextRenderingHintAntiAliasGridFit, UnitPixel,
 };
 
 const BADGE_HEIGHT_BASE: i32 = 20;
@@ -15,90 +13,83 @@ const BADGE_RADIUS_BASE: i32 = 10;
 const BADGE_FONT_SIZE_BASE: i32 = 11;
 const BADGE_SINGLE_WIDTH_BASE: i32 = 20;
 const BADGE_EXTRA_WIDTH_PER_CHAR_BASE: i32 = 5;
-const BADGE_BACKGROUND: u32 = 0x00617285;
-const BADGE_FOREGROUND: u32 = 0x00abc0d6;
+pub const BADGE_BACKGROUND: u32 = 0xff617285;
+const BADGE_FOREGROUND: u32 = 0xffabc0d6;
 
-pub fn draw_badge_pixels(
-    hdc: HDC,
+pub fn draw_badge_text(
+    graphics: *mut GpGraphics,
     count: usize,
-    icon_left: i32,
-    icon_top: i32,
-    icon_size: i32,
+    bounds: (i32, i32, i32, i32),
     dpi_scale: f64,
 ) {
-    let Some((left, top, right, bottom, radius)) =
-        badge_bounds_pixels(count, icon_left, icon_top, icon_size, dpi_scale)
-    else {
+    if graphics.is_null() || !should_show(count) || dpi_scale <= 0.0 {
         return;
-    };
-    draw_badge_with_bounds(hdc, count, (left, top, right, bottom, radius), dpi_scale);
-}
+    }
+    let (left, top, right, bottom) = bounds;
+    if right <= left || bottom <= top {
+        return;
+    }
 
-fn draw_badge_with_bounds(
-    hdc: HDC,
-    count: usize,
-    (left, top, right, bottom, radius): (i32, i32, i32, i32, i32),
-    badge_scale: f64,
-) {
-    let label = label(count);
+    let mut family: *mut GpFontFamily = std::ptr::null_mut();
+    let mut font: *mut GpFont = std::ptr::null_mut();
+    let mut format: *mut GpStringFormat = std::ptr::null_mut();
+    let mut solid_fill: *mut GpSolidFill = std::ptr::null_mut();
 
     unsafe {
-        let region = CreateRoundRectRgn(left, top, right, bottom, radius, radius);
-        if region.0.is_null() {
+        let status =
+            GdipCreateFontFamilyFromName(w!("Segoe UI"), std::ptr::null_mut(), &mut family);
+        if status.0 != 0 || family.is_null() {
             return;
         }
-        let brush = windows::Win32::Graphics::Gdi::CreateSolidBrush(COLORREF(BADGE_BACKGROUND));
-        if !brush.0.is_null() {
-            let _ = FillRgn(hdc, region, brush);
-            let _ = DeleteObject(brush.into());
+        let font_size = scaled(BADGE_FONT_SIZE_BASE, dpi_scale) as f32;
+        let status = GdipCreateFont(family, font_size, FontStyleBold.0, UnitPixel, &mut font);
+        if status.0 != 0 || font.is_null() {
+            GdipDeleteFontFamily(family);
+            return;
         }
-        let _ = DeleteObject(region.into());
+        let status = GdipCreateStringFormat(0, 0, &mut format);
+        if status.0 != 0 || format.is_null() {
+            GdipDeleteFont(font);
+            GdipDeleteFontFamily(family);
+            return;
+        }
+        GdipSetStringFormatAlign(format, StringAlignmentCenter);
+        GdipSetStringFormatLineAlign(format, StringAlignmentCenter);
 
-        let font = CreateFontW(
-            -scaled(BADGE_FONT_SIZE_BASE, badge_scale),
-            0,
-            0,
-            0,
-            FW_SEMIBOLD.0 as i32,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_TT_ONLY_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            ANTIALIASED_QUALITY,
-            DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
-            windows::core::w!("Segoe UI"),
-        );
-        if font.0.is_null() {
+        let status = GdipCreateSolidFill(BADGE_FOREGROUND, &mut solid_fill);
+        if status.0 != 0 || solid_fill.is_null() {
+            GdipDeleteStringFormat(format);
+            GdipDeleteFont(font);
+            GdipDeleteFontFamily(family);
             return;
         }
 
-        let old_font = SelectObject(hdc, font.into());
-        let old_mode = SetBkMode(hdc, TRANSPARENT);
-        let old_color = SetTextColor(hdc, COLORREF(BADGE_FOREGROUND));
-        let mut rect = RECT {
-            left,
-            top,
-            right,
-            bottom,
+        let label = label(count);
+        let mut text = label
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>();
+        let layout = RectF {
+            X: left as f32,
+            Y: top as f32,
+            Width: (right - left) as f32,
+            Height: (bottom - top) as f32,
         };
-        let mut text = label.encode_utf16().collect::<Vec<u16>>();
-        let _ = DrawTextW(
-            hdc,
-            &mut text,
-            &mut rect,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        GdipSetTextRenderingHint(graphics, TextRenderingHintAntiAliasGridFit);
+        GdipDrawString(
+            graphics,
+            PCWSTR(text.as_mut_ptr()),
+            label.encode_utf16().count() as i32,
+            font,
+            &layout,
+            format,
+            solid_fill as *const GpBrush,
         );
-        let _ = SetTextColor(hdc, old_color);
-        let _ = SetBkMode(
-            hdc,
-            windows::Win32::Graphics::Gdi::BACKGROUND_MODE(old_mode as u32),
-        );
-        if !old_font.0.is_null() {
-            let _ = SelectObject(hdc, old_font);
-        }
-        let _ = DeleteObject(HGDIOBJ(font.0));
+
+        GdipDeleteBrush(solid_fill as *mut GpBrush);
+        GdipDeleteStringFormat(format);
+        GdipDeleteFont(font);
+        GdipDeleteFontFamily(family);
     }
 }
 

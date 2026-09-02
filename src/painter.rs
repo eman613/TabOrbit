@@ -1,5 +1,5 @@
 use crate::app::SwitchAppsState;
-use crate::badge::{badge_bounds_pixels, draw_badge_pixels};
+use crate::badge::{badge_bounds_pixels, draw_badge_text, BADGE_BACKGROUND};
 use crate::utils::{check_error, get_moinitor_rect, is_light_theme, is_win11};
 
 use anyhow::{Context, Result};
@@ -177,13 +177,8 @@ impl GdiAAPainter {
                     icons_height as f32,
                 );
                 GdipDisposeImage(image_ptr);
-                GdipDeleteGraphics(graphics_ptr);
-                graphics_ptr = std::ptr::null_mut();
                 draw_badges(
-                    hdc_mem,
-                    panel_surface.bits,
-                    width,
-                    height,
+                    graphics_ptr,
                     state,
                     border_size,
                     icon_border,
@@ -192,6 +187,7 @@ impl GdiAAPainter {
                     dpi_scale,
                 );
             }
+            premultiply_alpha(panel_surface.bits, width, height);
 
             let blend = BLENDFUNCTION {
                 BlendOp: AC_SRC_OVER as _,
@@ -440,10 +436,7 @@ fn draw_icons(
 
 #[allow(clippy::too_many_arguments)]
 fn draw_badges(
-    hdc: HDC,
-    bits: *mut c_void,
-    bitmap_width: i32,
-    bitmap_height: i32,
+    graphics: *mut GpGraphics,
     state: &SwitchAppsState,
     border_size: i32,
     icon_border: i32,
@@ -451,17 +444,16 @@ fn draw_badges(
     item_size: i32,
     dpi_scale: f64,
 ) {
+    if graphics.is_null() {
+        return;
+    }
+    let badge_brush = unsafe { create_solid_brush(BADGE_BACKGROUND) };
+    if badge_brush.is_null() {
+        return;
+    }
     let icon_top = border_size + icon_border;
     for (i, entry) in state.apps.iter().enumerate() {
         let icon_left = border_size + icon_border + item_size * i as i32;
-        draw_badge_pixels(
-            hdc,
-            entry.window_count,
-            icon_left,
-            icon_top,
-            icon_size,
-            dpi_scale,
-        );
         if let Some((left, top, right, bottom, radius)) = badge_bounds_pixels(
             entry.window_count,
             icon_left,
@@ -469,17 +461,27 @@ fn draw_badges(
             icon_size,
             dpi_scale,
         ) {
-            set_alpha_round_rect(
-                bits,
-                bitmap_width,
-                bitmap_height,
-                left,
-                top,
-                right,
-                bottom,
-                radius,
+            unsafe {
+                draw_round_rect(
+                    graphics,
+                    badge_brush,
+                    left as f32,
+                    top as f32,
+                    right as f32,
+                    bottom as f32,
+                    radius as f32,
+                );
+            }
+            draw_badge_text(
+                graphics,
+                entry.window_count,
+                (left, top, right, bottom),
+                dpi_scale,
             );
         }
+    }
+    unsafe {
+        GdipDeleteBrush(badge_brush);
     }
 }
 
@@ -510,60 +512,21 @@ fn clear_transparent_surface(bits: *mut c_void, bitmap_width: i32, bitmap_height
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn set_alpha_round_rect(
-    bits: *mut c_void,
-    bitmap_width: i32,
-    bitmap_height: i32,
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
-    ellipse_width: i32,
-) {
+fn premultiply_alpha(bits: *mut c_void, bitmap_width: i32, bitmap_height: i32) {
     if bits.is_null() || bitmap_width <= 0 || bitmap_height <= 0 {
         return;
     }
-    let left = left.clamp(0, bitmap_width);
-    let right = right.clamp(left, bitmap_width);
-    let top = top.clamp(0, bitmap_height);
-    let bottom = bottom.clamp(top, bitmap_height);
-    let width = right - left;
-    let height = bottom - top;
-    let ellipse_width = ellipse_width.clamp(0, width.min(height));
-    let ellipse_width_squared = i64::from(ellipse_width) * i64::from(ellipse_width);
     unsafe {
         let pixels = std::slice::from_raw_parts_mut(
             bits as *mut u8,
             bitmap_width as usize * bitmap_height as usize * 4,
         );
-        for y in top..bottom {
-            let row_start = y as usize * bitmap_width as usize * 4;
-            for x in left..right {
-                let x2 = 2 * (x - left) + 1;
-                let y2 = 2 * (y - top) + 1;
-                let dx = if x2 < ellipse_width {
-                    ellipse_width - x2
-                } else if x2 > 2 * width - ellipse_width {
-                    x2 - (2 * width - ellipse_width)
-                } else {
-                    0
-                };
-                let dy = if y2 < ellipse_width {
-                    ellipse_width - y2
-                } else if y2 > 2 * height - ellipse_width {
-                    y2 - (2 * height - ellipse_width)
-                } else {
-                    0
-                };
-                let inside = dx == 0
-                    || dy == 0
-                    || i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy)
-                        <= ellipse_width_squared;
-                if inside {
-                    pixels[row_start + x as usize * 4 + 3] = 255;
-                }
-            }
+        let (pixel_chunks, _) = pixels.as_chunks_mut::<4>();
+        for pixel in pixel_chunks {
+            let alpha = u16::from(pixel[3]);
+            pixel[0] = ((u16::from(pixel[0]) * alpha + 127) / 255) as u8;
+            pixel[1] = ((u16::from(pixel[1]) * alpha + 127) / 255) as u8;
+            pixel[2] = ((u16::from(pixel[2]) * alpha + 127) / 255) as u8;
         }
     }
 }
