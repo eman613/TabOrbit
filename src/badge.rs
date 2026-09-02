@@ -18,22 +18,29 @@ const BADGE_EXTRA_WIDTH_PER_CHAR_BASE: i32 = 5;
 const BADGE_BACKGROUND: u32 = 0x00617285;
 const BADGE_FOREGROUND: u32 = 0x00abc0d6;
 
-pub fn draw_badge(
+pub fn draw_badge_pixels(
     hdc: HDC,
     count: usize,
     icon_left: i32,
     icon_top: i32,
     icon_size: i32,
-    scale: i32,
     dpi_scale: f64,
 ) {
     let Some((left, top, right, bottom, radius)) =
-        badge_bounds(count, icon_left, icon_top, icon_size, scale, dpi_scale)
+        badge_bounds_pixels(count, icon_left, icon_top, icon_size, dpi_scale)
     else {
         return;
     };
+    draw_badge_with_bounds(hdc, count, (left, top, right, bottom, radius), dpi_scale);
+}
+
+fn draw_badge_with_bounds(
+    hdc: HDC,
+    count: usize,
+    (left, top, right, bottom, radius): (i32, i32, i32, i32, i32),
+    badge_scale: f64,
+) {
     let label = label(count);
-    let badge_scale = scale as f64 * dpi_scale;
 
     unsafe {
         let region = CreateRoundRectRgn(left, top, right, bottom, radius, radius);
@@ -95,31 +102,26 @@ pub fn draw_badge(
     }
 }
 
-pub fn badge_bounds(
+pub fn badge_bounds_pixels(
     count: usize,
     icon_left: i32,
     icon_top: i32,
     icon_size: i32,
-    scale: i32,
     dpi_scale: f64,
 ) -> Option<(i32, i32, i32, i32, i32)> {
-    if !should_show(count) || scale <= 0 || dpi_scale <= 0.0 || icon_size <= 0 {
+    if !should_show(count) || dpi_scale <= 0.0 || icon_size <= 0 {
         return None;
     }
 
     let label = label(count);
-    let badge_scale = scale as f64 * dpi_scale;
-    let icon_left = icon_left.checked_mul(scale)?;
-    let icon_top = icon_top.checked_mul(scale)?;
-    let icon_size = icon_size.checked_mul(scale)?;
-    let badge_height = scaled(BADGE_HEIGHT_BASE, badge_scale);
-    let badge_width = badge_width(label.encode_utf16().count(), badge_scale);
-    let offset = scaled(BADGE_OFFSET_BASE, badge_scale);
+    let badge_height = scaled(BADGE_HEIGHT_BASE, dpi_scale);
+    let badge_width = badge_width(label.encode_utf16().count(), dpi_scale);
+    let offset = scaled(BADGE_OFFSET_BASE, dpi_scale);
     let right = icon_left.checked_add(icon_size)?.checked_sub(offset)?;
     let left = right.checked_sub(badge_width)?;
     let top = icon_top.checked_add(offset)?;
     let bottom = top.checked_add(badge_height)?;
-    let radius = scaled(BADGE_RADIUS_BASE, badge_scale);
+    let radius = scaled(BADGE_RADIUS_BASE, dpi_scale);
     Some((left, top, right, bottom, radius))
 }
 
@@ -149,7 +151,7 @@ const fn badge_width(char_count: usize, scale: f64) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{badge_bounds, label, should_show};
+    use super::{badge_bounds_pixels, label, should_show};
 
     #[test]
     fn badge_visibility_uses_filtered_window_count() {
@@ -169,12 +171,12 @@ mod tests {
 
     #[test]
     fn badge_bounds_keep_round_corner_dimensions() {
-        let single_digit = badge_bounds(2, 0, 0, 64, 1, 1.0).unwrap();
+        let single_digit = badge_bounds_pixels(2, 0, 0, 64, 1.0).unwrap();
         assert_eq!(single_digit.2 - single_digit.0, 20);
         assert_eq!(single_digit.3 - single_digit.1, 20);
         assert_eq!(single_digit.4, 10);
 
-        let capped_count = badge_bounds(100, 0, 0, 64, 1, 1.0).unwrap();
+        let capped_count = badge_bounds_pixels(100, 0, 0, 64, 1.0).unwrap();
         assert_eq!(capped_count.2 - capped_count.0, 30);
         assert_eq!(capped_count.3 - capped_count.1, 20);
         assert_eq!(capped_count.4, 10);

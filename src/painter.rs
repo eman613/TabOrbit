@@ -1,5 +1,5 @@
 use crate::app::SwitchAppsState;
-use crate::badge::{badge_bounds, draw_badge};
+use crate::badge::{badge_bounds_pixels, draw_badge_pixels};
 use crate::utils::{check_error, get_moinitor_rect, is_light_theme, is_win11};
 
 use anyhow::{Context, Result};
@@ -118,7 +118,7 @@ impl GdiAAPainter {
             GdipCreateFromHDC(hdc_mem, &mut graphics_ptr as _);
             GdipSetSmoothingMode(graphics_ptr, SmoothingModeAntiAlias);
             GdipSetInterpolationMode(graphics_ptr, InterpolationModeHighQualityBicubic);
-            GdipGraphicsClear(graphics_ptr, 0);
+            GdipGraphicsClear(graphics_ptr, panel_color);
             let panel_brush = create_solid_brush(panel_color);
             if !panel_brush.is_null() {
                 draw_round_rect(
@@ -144,7 +144,6 @@ impl GdiAAPainter {
                 item_corner_radius.min(item_size / 2),
                 selected_color,
                 panel_color,
-                dpi_scale,
             ) else {
                 error!("failed to create ARGB icon bitmap");
                 if !panel_brush.is_null() {
@@ -178,6 +177,20 @@ impl GdiAAPainter {
                     icons_height as f32,
                 );
                 GdipDisposeImage(image_ptr);
+                GdipDeleteGraphics(graphics_ptr);
+                graphics_ptr = std::ptr::null_mut();
+                draw_badges(
+                    hdc_mem,
+                    panel_surface.bits,
+                    width,
+                    height,
+                    state,
+                    border_size,
+                    icon_border,
+                    icon_size,
+                    item_size,
+                    dpi_scale,
+                );
             }
 
             let blend = BLENDFUNCTION {
@@ -204,7 +217,9 @@ impl GdiAAPainter {
             if !panel_brush.is_null() {
                 GdipDeleteBrush(panel_brush);
             }
-            GdipDeleteGraphics(graphics_ptr);
+            if !graphics_ptr.is_null() {
+                GdipDeleteGraphics(graphics_ptr);
+            }
 
             let _ = DeleteObject(bitmap_icons.bitmap.into());
             let _ = DeleteObject(bitmap_mem.into());
@@ -345,7 +360,6 @@ fn draw_icons(
     corner_radius: i32,
     selected_color: u32,
     transparent_color: u32,
-    dpi_scale: f64,
 ) -> Option<ArgbBitmap> {
     let scaled_width = width * SCALE_FACTOR;
     let scaled_height = height * SCALE_FACTOR;
@@ -367,8 +381,14 @@ fn draw_icons(
         if !graphics_scaled.is_null() {
             GdipSetSmoothingMode(graphics_scaled, SmoothingModeAntiAlias);
             GdipSetInterpolationMode(graphics_scaled, InterpolationModeHighQualityBicubic);
-            GdipGraphicsClear(graphics_scaled, transparent_rgb);
+            GdipGraphicsClear(graphics_scaled, 0);
         }
+        clear_transparent_surface(
+            bitmap_scaled.bits,
+            scaled_width,
+            scaled_height,
+            transparent_rgb,
+        );
         let selected_brush = create_solid_brush(selected_color);
 
         for (i, entry) in state.apps.iter().enumerate() {
@@ -401,34 +421,6 @@ fn draw_icons(
                 None,
                 DI_NORMAL,
             );
-            draw_badge(
-                hdc_scaled,
-                entry.window_count,
-                icon_border + (icon_size + icon_border * 2) * (i as i32),
-                icon_border,
-                icon_size,
-                SCALE_FACTOR,
-                dpi_scale,
-            );
-            if let Some((left, top, right, bottom, radius)) = badge_bounds(
-                entry.window_count,
-                icon_border + (icon_size + icon_border * 2) * (i as i32),
-                icon_border,
-                icon_size,
-                SCALE_FACTOR,
-                dpi_scale,
-            ) {
-                set_alpha_round_rect(
-                    bitmap_scaled.bits,
-                    scaled_width,
-                    scaled_height,
-                    left,
-                    top,
-                    right,
-                    bottom,
-                    radius,
-                );
-            }
         }
 
         if !graphics_scaled.is_null() {
@@ -446,9 +438,76 @@ fn draw_icons(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_badges(
+    hdc: HDC,
+    bits: *mut c_void,
+    bitmap_width: i32,
+    bitmap_height: i32,
+    state: &SwitchAppsState,
+    border_size: i32,
+    icon_border: i32,
+    icon_size: i32,
+    item_size: i32,
+    dpi_scale: f64,
+) {
+    let icon_top = border_size + icon_border;
+    for (i, entry) in state.apps.iter().enumerate() {
+        let icon_left = border_size + icon_border + item_size * i as i32;
+        draw_badge_pixels(
+            hdc,
+            entry.window_count,
+            icon_left,
+            icon_top,
+            icon_size,
+            dpi_scale,
+        );
+        if let Some((left, top, right, bottom, radius)) = badge_bounds_pixels(
+            entry.window_count,
+            icon_left,
+            icon_top,
+            icon_size,
+            dpi_scale,
+        ) {
+            set_alpha_round_rect(
+                bits,
+                bitmap_width,
+                bitmap_height,
+                left,
+                top,
+                right,
+                bottom,
+                radius,
+            );
+        }
+    }
+}
+
 struct ArgbBitmap {
     bitmap: HBITMAP,
     bits: *mut c_void,
+}
+
+fn clear_transparent_surface(bits: *mut c_void, bitmap_width: i32, bitmap_height: i32, color: u32) {
+    if bits.is_null() || bitmap_width <= 0 || bitmap_height <= 0 {
+        return;
+    }
+    let blue = (color & 0xff) as u8;
+    let green = ((color >> 8) & 0xff) as u8;
+    let red = ((color >> 16) & 0xff) as u8;
+    unsafe {
+        let pixels = std::slice::from_raw_parts_mut(
+            bits as *mut u8,
+            bitmap_width as usize * bitmap_height as usize * 4,
+        );
+        let (pixel_chunks, _) = pixels.as_chunks_mut::<4>();
+        for pixel in pixel_chunks {
+            pixel[0] = blue;
+            pixel[1] = green;
+            pixel[2] = red;
+            pixel[3] = 0;
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
