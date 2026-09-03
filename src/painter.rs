@@ -34,14 +34,15 @@ use windows::Win32::{
 };
 
 pub const BG_DARK_COLOR: u32 = 0x64191919;
-pub const FG_DARK_COLOR: u32 = 0xc8505050;
+pub const FG_DARK_COLOR: u32 = 0xb0505050;
 pub const BG_LIGHT_COLOR: u32 = 0x64f4f4f4;
-pub const FG_LIGHT_COLOR: u32 = 0xc8d0d0d0;
+pub const FG_LIGHT_COLOR: u32 = 0xb0d0d0d0;
 pub const ICON_SIZE_BASE: i32 = 64;
 pub const WINDOW_BORDER_SIZE_BASE: i32 = 10;
 pub const ICON_BORDER_SIZE_BASE: i32 = 4;
 const PANEL_CORNER_RADIUS_BASE: i32 = 16;
 const ITEM_CORNER_RADIUS_BASE: i32 = 8;
+const SELECTION_INSET_BASE: i32 = 1;
 
 // GDI Antialiasing Painter
 pub struct GdiAAPainter {
@@ -99,6 +100,7 @@ impl GdiAAPainter {
         let hdc_screen = self.hdc_screen;
 
         let (panel_color, selected_color) = theme_color(is_light_theme());
+        let selection_inset = ((SELECTION_INSET_BASE as f64 * dpi_scale).round() as i32).max(1);
 
         unsafe {
             let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
@@ -138,6 +140,7 @@ impl GdiAAPainter {
                 item_size,
                 item_corner_radius.min(item_size / 2),
                 selected_color,
+                selection_inset,
             );
             draw_badges(
                 graphics_ptr,
@@ -315,6 +318,7 @@ fn draw_icons(
     item_size: i32,
     corner_radius: i32,
     selected_color: u32,
+    selection_inset: i32,
 ) {
     if graphics.is_null() || icon_size <= 0 || item_size <= 0 {
         return;
@@ -324,15 +328,21 @@ fn draw_icons(
     for (i, entry) in state.apps.iter().enumerate() {
         let item_left = border_size + item_size * i as i32;
         if i == state.index && !selected_brush.is_null() {
+            let inset = selection_inset.min(item_size / 2);
+            let left = item_left + inset;
+            let top = border_size + inset;
+            let right = item_left + item_size - inset;
+            let bottom = border_size + item_size - inset;
+            let radius = corner_radius.saturating_sub(inset).min((right - left).min(bottom - top) / 2);
             unsafe {
                 draw_round_rect(
                     graphics,
                     selected_brush,
-                    item_left as f32,
-                    border_size as f32,
-                    (item_left + item_size) as f32,
-                    (border_size + item_size) as f32,
-                    corner_radius.min(item_size / 2) as f32,
+                    left as f32,
+                    top as f32,
+                    right as f32,
+                    bottom as f32,
+                    radius as f32,
                 );
             }
         }
