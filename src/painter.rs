@@ -45,9 +45,9 @@ pub const FG_LIGHT_COLOR: u32 = 0xb0d0d0d0;
 pub const ICON_SIZE_BASE: i32 = 64;
 pub const WINDOW_BORDER_SIZE_BASE: i32 = 10;
 pub const ICON_BORDER_SIZE_BASE: i32 = 4;
-const LABEL_GAP_BASE: i32 = 6;
-const LABEL_HEIGHT_BASE: i32 = 20;
-const LABEL_FONT_SIZE_BASE: i32 = 10;
+const LABEL_GAP_BASE: i32 = 4;
+const LABEL_HEIGHT_BASE: i32 = 24;
+const LABEL_FONT_SIZE_BASE: i32 = 13;
 const LABEL_MAX_WIDTH_BASE: i32 = 220;
 const PANEL_CORNER_RADIUS_BASE: i32 = 16;
 const ITEM_CORNER_RADIUS_BASE: i32 = 8;
@@ -479,12 +479,17 @@ fn draw_label(
         return;
     }
 
-    let max_width = scaled(LABEL_MAX_WIDTH_BASE, dpi_scale)
-        .min(panel_width.saturating_sub(border_size.saturating_mul(2)))
+    let content_left = border_size;
+    let content_right = panel_width.saturating_sub(border_size);
+    let available_width = content_right.saturating_sub(content_left);
+    let label_width = scaled(LABEL_MAX_WIDTH_BASE, dpi_scale)
+        .min(available_width)
         .max(1);
     let center_x = border_size + item_size * state.index as i32 + item_size / 2;
-    let left = (center_x - max_width / 2).max(border_size);
-    let right = (left + max_width).min(panel_width.saturating_sub(border_size));
+    let min_left = content_left;
+    let max_left = content_right.saturating_sub(label_width);
+    let left = (center_x - label_width / 2).clamp(min_left, max_left);
+    let right = left.saturating_add(label_width);
     let width = right.saturating_sub(left);
     if width <= 0 {
         return;
