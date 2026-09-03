@@ -43,6 +43,7 @@ pub const ICON_BORDER_SIZE_BASE: i32 = 4;
 const PANEL_CORNER_RADIUS_BASE: i32 = 16;
 const ITEM_CORNER_RADIUS_BASE: i32 = 8;
 const SELECTION_INSET_BASE: i32 = 1;
+const TRANSPARENT_COLOR: u32 = 0x00000000;
 
 // GDI Antialiasing Painter
 pub struct GdiAAPainter {
@@ -117,7 +118,7 @@ impl GdiAAPainter {
             GdipCreateFromHDC(hdc_mem, &mut graphics_ptr as _);
             GdipSetSmoothingMode(graphics_ptr, SmoothingModeAntiAlias);
             GdipSetInterpolationMode(graphics_ptr, InterpolationModeHighQualityBicubic);
-            GdipGraphicsClear(graphics_ptr, panel_color);
+            GdipGraphicsClear(graphics_ptr, TRANSPARENT_COLOR);
             let panel_brush = create_solid_brush(panel_color);
             if !panel_brush.is_null() {
                 draw_round_rect(
@@ -333,7 +334,9 @@ fn draw_icons(
             let top = border_size + inset;
             let right = item_left + item_size - inset;
             let bottom = border_size + item_size - inset;
-            let radius = corner_radius.saturating_sub(inset).min((right - left).min(bottom - top) / 2);
+            let radius = corner_radius
+                .saturating_sub(inset)
+                .min((right - left).min(bottom - top) / 2);
             unsafe {
                 draw_round_rect(
                     graphics,
