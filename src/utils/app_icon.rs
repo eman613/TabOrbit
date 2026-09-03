@@ -15,16 +15,16 @@ use windows::{
         Foundation::{HWND, LPARAM, WPARAM},
         Graphics::Gdi::{
             CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC,
-            SelectObject, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HBITMAP, HDC,
-            HGDIOBJ, RGBQUAD,
+            SelectObject, SetDIBits, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HBITMAP,
+            HDC, HGDIOBJ, RGBQUAD,
         },
         Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
         UI::{
             Controls::IImageList,
             Shell::{SHGetFileInfoW, SHGetImageList, SHFILEINFOW, SHGFI_SYSICONINDEX},
             WindowsAndMessaging::{
-                CopyIcon, CreateIconFromResourceEx, DestroyIcon, GetIconInfo, LoadIconW,
-                LoadImageW, SendMessageTimeoutW, GCLP_HICON, HICON, ICONINFO, ICON_BIG,
+                CopyIcon, CreateIconFromResourceEx, CreateIconIndirect, DestroyIcon, GetIconInfo,
+                LoadIconW, LoadImageW, SendMessageTimeoutW, GCLP_HICON, HICON, ICONINFO, ICON_BIG,
                 ICON_SMALL2, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, LR_DEFAULTSIZE,
                 LR_LOADFROMFILE, SMTO_ABORTIFHUNG, WM_GETICON,
             },
@@ -292,7 +292,7 @@ fn get_exe_icon(module_path: &str) -> Option<HICON> {
                 continue;
             };
             match is_valid_icon(hicon) {
-                Some(true) => return Some(hicon),
+                Some(true) => return Some(sanitize_icon_transparency(hicon)),
                 _ => {
                     let _ = DestroyIcon(hicon);
                 }
@@ -300,6 +300,120 @@ fn get_exe_icon(module_path: &str) -> Option<HICON> {
         }
     }
     None
+}
+
+const ICON_HALO_ALPHA_MAX: u8 = 8;
+const ICON_HALO_BRIGHT_MIN: u8 = 220;
+
+/// Removes the white matte that Windows can attach to low-alpha Shell icons.
+/// The cleaned copy keeps the original HICON alive when any GDI operation fails.
+fn sanitize_icon_transparency(hicon: HICON) -> HICON {
+    unsafe {
+        let mut icon_info = ICONINFO::default();
+        if GetIconInfo(hicon, &mut icon_info).is_err() {
+            return hicon;
+        }
+        let _color_guard = BitmapGuard(icon_info.hbmColor);
+        let _mask_guard = BitmapGuard(icon_info.hbmMask);
+
+        let mut bitmap = BITMAP::default();
+        if GetObjectW(
+            icon_info.hbmColor.into(),
+            mem::size_of::<BITMAP>() as i32,
+            Some(&mut bitmap as *mut _ as *mut _),
+        ) == 0
+        {
+            return hicon;
+        }
+
+        let width = bitmap.bmWidth;
+        let height = bitmap.bmHeight;
+        let byte_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|size| size.checked_mul(4));
+        if width <= 0 || height <= 0 || byte_len.is_none() {
+            return hicon;
+        }
+        let byte_len = byte_len.unwrap();
+
+        let screen_dc = GetDC(None);
+        let _screen_guard = ScreenDcGuard(screen_dc);
+        let mem_dc = CreateCompatibleDC(Some(screen_dc));
+        let _dc_guard = HdcGuard(mem_dc);
+        let old_bitmap = SelectObject(mem_dc, HGDIOBJ(icon_info.hbmColor.0 as _));
+
+        let mut bitmap_info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: 0,
+                ..Default::default()
+            },
+            bmiColors: [RGBQUAD::default(); 1],
+        };
+        let mut pixels = vec![0u8; byte_len];
+        if GetDIBits(
+            mem_dc,
+            icon_info.hbmColor,
+            0,
+            height as u32,
+            Some(pixels.as_mut_ptr() as *mut _),
+            &mut bitmap_info,
+            DIB_RGB_COLORS,
+        ) == 0
+        {
+            SelectObject(mem_dc, old_bitmap);
+            return hicon;
+        }
+
+        let mut cleaned = 0usize;
+        for pixel in pixels.as_chunks_mut::<4>().0 {
+            let alpha = pixel[3];
+            if alpha <= ICON_HALO_ALPHA_MAX
+                && pixel[2] >= ICON_HALO_BRIGHT_MIN
+                && pixel[1] >= ICON_HALO_BRIGHT_MIN
+                && pixel[0] >= ICON_HALO_BRIGHT_MIN
+            {
+                pixel[0] = 0;
+                pixel[1] = 0;
+                pixel[2] = 0;
+                cleaned += 1;
+            }
+        }
+        if cleaned == 0 {
+            SelectObject(mem_dc, old_bitmap);
+            return hicon;
+        }
+
+        SelectObject(mem_dc, old_bitmap);
+        if SetDIBits(
+            None,
+            icon_info.hbmColor,
+            0,
+            height as u32,
+            pixels.as_ptr() as *const _,
+            &bitmap_info,
+            DIB_RGB_COLORS,
+        ) == 0
+        {
+            return hicon;
+        }
+
+        let clean_icon = CreateIconIndirect(&icon_info).ok();
+        if let Some(clean_icon) = clean_icon {
+            debug!(
+                "sanitized Shell icon transparency: size={}x{}, pixels={cleaned}",
+                width, height
+            );
+            let _ = DestroyIcon(hicon);
+            clean_icon
+        } else {
+            hicon
+        }
+    }
 }
 
 fn get_shfileinfo(module_path: &str) -> Option<SHFILEINFOW> {
