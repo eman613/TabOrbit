@@ -5,8 +5,8 @@ use crate::painter::GdiAAPainter;
 use crate::startup::Startup;
 use crate::trayicon::TrayIcon;
 use crate::utils::{
-    check_error, get_app_icon, get_foreground_window, get_window_user_data, is_iconic_window,
-    is_running_as_admin, list_windows, relaunch_as_admin, set_foreground_window,
+    check_error, get_app_display_name, get_app_icon, get_foreground_window, get_window_user_data,
+    is_iconic_window, is_running_as_admin, list_windows, relaunch_as_admin, set_foreground_window,
     set_window_user_data,
 };
 
@@ -448,6 +448,7 @@ impl App {
                 icon: *module_hicon,
                 representative_hwnd: module_hwnd,
                 window_count: hwnds.len(),
+                display_name: get_app_display_name(module_path, module_hwnd),
             });
         }
         let num_apps = apps.len() as i32;
@@ -535,4 +536,5 @@ pub struct AppEntry {
     pub icon: HICON,
     pub representative_hwnd: HWND,
     pub window_count: usize,
+    pub display_name: String,
 }
