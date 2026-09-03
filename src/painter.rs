@@ -4,31 +4,26 @@ use crate::utils::{check_error, get_moinitor_rect, is_light_theme, is_win11};
 
 use anyhow::{Context, Result};
 use std::{ffi::c_void, mem};
-use windows::core::{w, PCWSTR};
+use windows::core::{s, w, BOOL};
 use windows::Win32::{
     Foundation::{COLORREF, HWND, POINT, SIZE},
     Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND},
     Graphics::{
         Gdi::{
-            CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
-            SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-            BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC,
+            CreateCompatibleDC, CreateDIBSection, CreateRoundRectRgn, DeleteDC, DeleteObject,
+            GetDC, ReleaseDC, SelectObject, SetWindowRgn, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
+            BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC,
         },
         GdiPlus::{
-            FillModeAlternate, FontStyleRegular, GdipAddPathArc, GdipClosePathFigure,
-            GdipCreateBitmapFromHICON, GdipCreateFont, GdipCreateFontFamilyFromName,
-            GdipCreateFromHDC, GdipCreatePath, GdipCreateSolidFill, GdipCreateStringFormat,
-            GdipDeleteBrush, GdipDeleteFont, GdipDeleteFontFamily, GdipDeleteGraphics,
-            GdipDeletePath, GdipDeleteStringFormat, GdipDisposeImage, GdipDrawImageRect,
-            GdipDrawString, GdipFillPath, GdipGraphicsClear, GdipSetInterpolationMode,
-            GdipSetSmoothingMode, GdipSetStringFormatAlign, GdipSetStringFormatFlags,
-            GdipSetStringFormatLineAlign, GdipSetStringFormatTrimming, GdipSetTextRenderingHint,
-            GdiplusShutdown, GdiplusStartup, GdiplusStartupInput, GpBitmap, GpBrush, GpGraphics,
-            GpImage, GpPath, GpSolidFill, InterpolationModeHighQualityBicubic, RectF,
-            SmoothingModeAntiAlias, StringAlignmentCenter, StringFormatFlagsNoWrap,
-            StringTrimmingEllipsisCharacter, TextRenderingHintAntiAliasGridFit, UnitPixel,
+            FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateBitmapFromHICON,
+            GdipCreateFromHDC, GdipCreatePath, GdipCreateSolidFill, GdipDeleteBrush,
+            GdipDeleteGraphics, GdipDeletePath, GdipDisposeImage, GdipDrawImageRect, GdipFillPath,
+            GdipGraphicsClear, GdipSetInterpolationMode, GdipSetSmoothingMode, GdiplusShutdown,
+            GdiplusStartup, GdiplusStartupInput, GpBitmap, GpBrush, GpGraphics, GpImage, GpPath,
+            GpSolidFill, InterpolationModeHighQualityBicubic, SmoothingModeAntiAlias,
         },
     },
+    System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
     UI::{
         HiDpi::GetDpiForWindow,
         Input::KeyboardAndMouse::SetFocus,
@@ -45,10 +40,6 @@ pub const FG_LIGHT_COLOR: u32 = 0xb0d0d0d0;
 pub const ICON_SIZE_BASE: i32 = 64;
 pub const WINDOW_BORDER_SIZE_BASE: i32 = 10;
 pub const ICON_BORDER_SIZE_BASE: i32 = 4;
-const LABEL_GAP_BASE: i32 = 4;
-const LABEL_HEIGHT_BASE: i32 = 24;
-const LABEL_FONT_SIZE_BASE: i32 = 13;
-const LABEL_MAX_WIDTH_BASE: i32 = 220;
 const PANEL_CORNER_RADIUS_BASE: i32 = 16;
 const ITEM_CORNER_RADIUS_BASE: i32 = 8;
 const SELECTION_INSET_BASE: i32 = 1;
@@ -73,7 +64,6 @@ impl GdiAAPainter {
             .context("Failed to initialize GDI+")?;
 
         let hdc_screen = unsafe { GetDC(Some(hwnd)) };
-        configure_window_visuals(hwnd);
 
         Ok(Self {
             token,
@@ -88,8 +78,6 @@ impl GdiAAPainter {
         let icon_size_max = (ICON_SIZE_BASE as f64 * dpi_scale) as i32;
         let border_size = (WINDOW_BORDER_SIZE_BASE as f64 * dpi_scale) as i32;
         let icon_border = (ICON_BORDER_SIZE_BASE as f64 * dpi_scale) as i32;
-        let label_gap = (LABEL_GAP_BASE as f64 * dpi_scale) as i32;
-        let label_height = (LABEL_HEIGHT_BASE as f64 * dpi_scale) as i32;
 
         let Coordinate {
             x,
@@ -103,8 +91,6 @@ impl GdiAAPainter {
             icon_size_max,
             border_size,
             icon_border,
-            label_gap,
-            label_height,
         );
 
         let panel_corner_radius = (PANEL_CORNER_RADIUS_BASE as f64 * dpi_scale) as i32;
@@ -113,8 +99,9 @@ impl GdiAAPainter {
         let hwnd = self.hwnd;
         let hdc_screen = self.hdc_screen;
 
-        let (panel_color, selected_color, label_color) = theme_color(is_light_theme());
+        let (panel_color, selected_color) = theme_color(is_light_theme());
         let selection_inset = ((SELECTION_INSET_BASE as f64 * dpi_scale).round() as i32).max(1);
+        configure_window_visuals(hwnd, width, height, panel_corner_radius, panel_color);
 
         unsafe {
             let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
@@ -164,17 +151,6 @@ impl GdiAAPainter {
                 icon_size,
                 item_size,
                 dpi_scale,
-            );
-            draw_label(
-                graphics_ptr,
-                state,
-                width,
-                border_size,
-                item_size,
-                label_gap,
-                label_height,
-                dpi_scale,
-                label_color,
             );
             premultiply_alpha(panel_surface.bits, width, height);
 
@@ -238,8 +214,6 @@ impl GdiAAPainter {
         let icon_size_max = (ICON_SIZE_BASE as f64 * dpi_scale) as i32;
         let border_size = (WINDOW_BORDER_SIZE_BASE as f64 * dpi_scale) as i32;
         let icon_border = (ICON_BORDER_SIZE_BASE as f64 * dpi_scale) as i32;
-        let label_gap = (LABEL_GAP_BASE as f64 * dpi_scale) as i32;
-        let label_height = (LABEL_HEIGHT_BASE as f64 * dpi_scale) as i32;
 
         let Coordinate {
             x, y, item_size, ..
@@ -248,8 +222,6 @@ impl GdiAAPainter {
             icon_size_max,
             border_size,
             icon_border,
-            label_gap,
-            label_height,
         );
 
         let xpos = cursor_pos.x - x;
@@ -275,10 +247,10 @@ impl Drop for GdiAAPainter {
     }
 }
 
-const fn theme_color(light_theme: bool) -> (u32, u32, u32) {
+const fn theme_color(light_theme: bool) -> (u32, u32) {
     match light_theme {
-        true => (BG_LIGHT_COLOR, FG_LIGHT_COLOR, 0xff303030),
-        false => (BG_DARK_COLOR, FG_DARK_COLOR, 0xfff0f0f0),
+        true => (BG_LIGHT_COLOR, FG_LIGHT_COLOR),
+        false => (BG_DARK_COLOR, FG_DARK_COLOR),
     }
 }
 
@@ -453,126 +425,6 @@ fn draw_badges(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_label(
-    graphics: *mut GpGraphics,
-    state: &SwitchAppsState,
-    panel_width: i32,
-    border_size: i32,
-    item_size: i32,
-    label_gap: i32,
-    label_height: i32,
-    dpi_scale: f64,
-    label_color: u32,
-) {
-    if graphics.is_null()
-        || state.index >= state.apps.len()
-        || item_size <= 0
-        || label_height <= 0
-        || dpi_scale <= 0.0
-    {
-        return;
-    }
-
-    let text = state.apps[state.index].display_name.trim();
-    if text.is_empty() {
-        return;
-    }
-
-    let content_left = border_size;
-    let content_right = panel_width.saturating_sub(border_size);
-    let available_width = content_right.saturating_sub(content_left);
-    let label_width = scaled(LABEL_MAX_WIDTH_BASE, dpi_scale)
-        .min(available_width)
-        .max(1);
-    let center_x = border_size + item_size * state.index as i32 + item_size / 2;
-    let min_left = content_left;
-    let max_left = content_right.saturating_sub(label_width);
-    let left = (center_x - label_width / 2).clamp(min_left, max_left);
-    let right = left.saturating_add(label_width);
-    let width = right.saturating_sub(left);
-    if width <= 0 {
-        return;
-    }
-
-    let top = border_size + item_size + label_gap;
-    let layout = RectF {
-        X: left as f32,
-        Y: top as f32,
-        Width: width as f32,
-        Height: label_height as f32,
-    };
-    let text_utf16: Vec<u16> = text.encode_utf16().collect();
-
-    unsafe {
-        let mut family = std::ptr::null_mut();
-        let mut status = GdipCreateFontFamilyFromName(
-            w!("Microsoft YaHei UI"),
-            std::ptr::null_mut(),
-            &mut family,
-        );
-        if status.0 != 0 || family.is_null() {
-            family = std::ptr::null_mut();
-            status =
-                GdipCreateFontFamilyFromName(w!("Segoe UI"), std::ptr::null_mut(), &mut family);
-        }
-        if status.0 != 0 || family.is_null() {
-            debug!("failed to create application label font family");
-            return;
-        }
-
-        let mut font = std::ptr::null_mut();
-        status = GdipCreateFont(
-            family,
-            scaled(LABEL_FONT_SIZE_BASE, dpi_scale) as f32,
-            FontStyleRegular.0,
-            UnitPixel,
-            &mut font,
-        );
-        if status.0 != 0 || font.is_null() {
-            GdipDeleteFontFamily(family);
-            return;
-        }
-
-        let mut format = std::ptr::null_mut();
-        status = GdipCreateStringFormat(0, 0, &mut format);
-        if status.0 != 0 || format.is_null() {
-            GdipDeleteFont(font);
-            GdipDeleteFontFamily(family);
-            return;
-        }
-        GdipSetStringFormatAlign(format, StringAlignmentCenter);
-        GdipSetStringFormatLineAlign(format, StringAlignmentCenter);
-        GdipSetStringFormatFlags(format, StringFormatFlagsNoWrap.0);
-        GdipSetStringFormatTrimming(format, StringTrimmingEllipsisCharacter);
-
-        let mut brush = std::ptr::null_mut();
-        status = GdipCreateSolidFill(label_color, &mut brush);
-        if status.0 != 0 || brush.is_null() {
-            GdipDeleteStringFormat(format);
-            GdipDeleteFont(font);
-            GdipDeleteFontFamily(family);
-            return;
-        }
-
-        GdipSetTextRenderingHint(graphics, TextRenderingHintAntiAliasGridFit);
-        let _ = GdipDrawString(
-            graphics,
-            PCWSTR(text_utf16.as_ptr()),
-            text_utf16.len() as i32,
-            font,
-            &layout,
-            format,
-            brush as *const GpBrush,
-        );
-
-        GdipDeleteBrush(brush as *mut GpBrush);
-        GdipDeleteStringFormat(format);
-        GdipDeleteFont(font);
-        GdipDeleteFontFamily(family);
-    }
-}
-
 struct ArgbBitmap {
     bitmap: HBITMAP,
     bits: *mut c_void,
@@ -641,7 +493,35 @@ unsafe fn create_solid_brush(color: u32) -> *mut GpBrush {
     solid_fill as *mut GpBrush
 }
 
-fn configure_window_visuals(hwnd: HWND) {
+#[repr(C)]
+struct AccentPolicy {
+    accent_state: u32,
+    accent_flags: u32,
+    gradient_color: u32,
+    animation_id: u32,
+}
+
+#[repr(C)]
+struct WindowCompositionAttributeData {
+    attribute: u32,
+    data: *mut c_void,
+    data_size: usize,
+}
+
+type SetWindowCompositionAttributeFn =
+    unsafe extern "system" fn(HWND, *mut WindowCompositionAttributeData) -> BOOL;
+
+const WCA_ACCENT_POLICY: u32 = 19;
+const ACCENT_ENABLE_BLURBEHIND: u32 = 3;
+const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
+
+fn configure_window_visuals(
+    hwnd: HWND,
+    width: i32,
+    height: i32,
+    corner_radius: i32,
+    panel_color: u32,
+) {
     if is_win11() {
         let preference = DWMWCP_ROUND;
         let result = unsafe {
@@ -657,7 +537,60 @@ fn configure_window_visuals(hwnd: HWND) {
         }
     }
 
-    debug!("window blur disabled for transparent layered frame; using ARGB surface");
+    set_window_region(hwnd, width, height, corner_radius);
+    if !enable_accent_blur(hwnd, panel_color) {
+        debug!("window blur unavailable; using translucent ARGB surface");
+    }
+}
+
+fn set_window_region(hwnd: HWND, width: i32, height: i32, corner_radius: i32) {
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let diameter = corner_radius.saturating_mul(2).clamp(1, width.min(height));
+    let region = unsafe { CreateRoundRectRgn(0, 0, width, height, diameter, diameter) };
+    if region.is_invalid() {
+        debug!("rounded window region creation failed");
+        return;
+    }
+    let result = unsafe { SetWindowRgn(hwnd, Some(region), true) };
+    if result == 0 {
+        debug!("rounded window region application failed");
+        unsafe {
+            let _ = DeleteObject(region.into());
+        }
+    }
+}
+
+fn enable_accent_blur(hwnd: HWND, gradient_color: u32) -> bool {
+    let Ok(user32) = (unsafe { GetModuleHandleW(w!("user32.dll")) }) else {
+        return false;
+    };
+    let Some(procedure) = (unsafe { GetProcAddress(user32, s!("SetWindowCompositionAttribute")) })
+    else {
+        return false;
+    };
+    let set_window_composition_attribute: SetWindowCompositionAttributeFn =
+        unsafe { mem::transmute(procedure) };
+
+    for accent_state in [ACCENT_ENABLE_ACRYLICBLURBEHIND, ACCENT_ENABLE_BLURBEHIND] {
+        let mut policy = AccentPolicy {
+            accent_state,
+            accent_flags: 0,
+            gradient_color,
+            animation_id: 0,
+        };
+        let mut data = WindowCompositionAttributeData {
+            attribute: WCA_ACCENT_POLICY,
+            data: &mut policy as *mut _ as *mut c_void,
+            data_size: mem::size_of::<AccentPolicy>(),
+        };
+        if unsafe { set_window_composition_attribute(hwnd, &mut data).as_bool() } {
+            debug!("window blur enabled: accent_state={accent_state}");
+            return true;
+        }
+    }
+    false
 }
 
 fn get_dpi_scale(hwnd: HWND) -> f64 {
@@ -671,10 +604,6 @@ fn get_dpi_scale(hwnd: HWND) -> f64 {
     }
 }
 
-const fn scaled(value: i32, scale: f64) -> i32 {
-    (value as f64 * scale).round() as i32
-}
-
 struct Coordinate {
     x: i32,
     y: i32,
@@ -685,14 +614,7 @@ struct Coordinate {
 }
 
 impl Coordinate {
-    fn new(
-        num_apps: i32,
-        icon_size_max: i32,
-        border_size: i32,
-        icon_border: i32,
-        label_gap: i32,
-        label_height: i32,
-    ) -> Self {
+    fn new(num_apps: i32, icon_size_max: i32, border_size: i32, icon_border: i32) -> Self {
         let monitor_rect = get_moinitor_rect();
         let monitor_width = monitor_rect.right - monitor_rect.left;
         let monitor_height = monitor_rect.bottom - monitor_rect.top;
@@ -702,7 +624,7 @@ impl Coordinate {
 
         let item_size = icon_size + icon_border * 2;
         let width = item_size * num_apps + border_size * 2;
-        let height = item_size + label_gap + label_height + border_size * 2;
+        let height = item_size + border_size * 2;
         let x = monitor_rect.left + (monitor_width - width) / 2;
         let y = monitor_rect.top + (monitor_height - height) / 2;
 

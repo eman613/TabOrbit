@@ -2,12 +2,8 @@ use crate::utils::is_process_elevated;
 
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
-use std::{
-    ffi::c_void,
-    mem::size_of,
-    path::{Path, PathBuf},
-};
-use windows::core::{w, BOOL, PCWSTR, PWSTR};
+use std::{ffi::c_void, mem::size_of, path::PathBuf};
+use windows::core::{BOOL, PCWSTR, PWSTR};
 use windows::Win32::{
     Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HWND, LPARAM, MAX_PATH, POINT, RECT},
     Graphics::{
@@ -16,7 +12,6 @@ use windows::Win32::{
     },
     Storage::{
         EnhancedStorage::PKEY_AppUserModel_ID,
-        FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW},
         Packaging::Appx::{GetPackagePathByFullName, GetPackagesByPackageFamily},
     },
     System::{
@@ -404,125 +399,6 @@ pub fn get_window_title(hwnd: HWND) -> String {
         return String::new();
     }
     String::from_utf16_lossy(&buf[..len as usize])
-}
-
-/// Returns the user-facing executable description from the version resource.
-pub fn get_file_description(module_path: &str) -> Option<String> {
-    let path = module_path.split("::").next().unwrap_or(module_path).trim();
-    if path.is_empty() {
-        return None;
-    }
-
-    let wide_path: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
-    let mut handle = 0u32;
-    let size = unsafe {
-        GetFileVersionInfoSizeW(PCWSTR(wide_path.as_ptr()), Some(&mut handle as *mut u32))
-    };
-    if size == 0 {
-        debug!("file description unavailable: version resource size is zero path={path}");
-        return None;
-    }
-
-    let mut data = vec![0u8; size as usize];
-    if unsafe {
-        GetFileVersionInfoW(
-            PCWSTR(wide_path.as_ptr()),
-            None,
-            size,
-            data.as_mut_ptr() as *mut c_void,
-        )
-    }
-    .is_err()
-    {
-        debug!("file description unavailable: version resource read failed path={path}");
-        return None;
-    }
-
-    let mut translation_ptr = std::ptr::null_mut();
-    let mut translation_len = 0u32;
-    let translation_key = w!("\\VarFileInfo\\Translation");
-    let has_translation = unsafe {
-        VerQueryValueW(
-            data.as_ptr() as *const c_void,
-            translation_key,
-            &mut translation_ptr,
-            &mut translation_len,
-        )
-    }
-    .as_bool()
-        && !translation_ptr.is_null()
-        && translation_len >= 4;
-
-    if has_translation {
-        let translations = unsafe {
-            std::slice::from_raw_parts(
-                translation_ptr as *const u16,
-                (translation_len / 2) as usize,
-            )
-        };
-        let (translation_pairs, _) = translations.as_chunks::<2>();
-        for pair in translation_pairs {
-            let query = format!(
-                r"\StringFileInfo\{:04x}{:04x}\FileDescription",
-                pair[0], pair[1]
-            );
-            if let Some(value) = query_version_string(&data, &query) {
-                return Some(value);
-            }
-        }
-    }
-
-    query_version_string(&data, r"\StringFileInfo\040904b0\FileDescription")
-}
-
-fn query_version_string(data: &[u8], query: &str) -> Option<String> {
-    let wide_query: Vec<u16> = query.encode_utf16().chain(Some(0)).collect();
-    let mut value_ptr = std::ptr::null_mut();
-    let mut value_len = 0u32;
-    let found = unsafe {
-        VerQueryValueW(
-            data.as_ptr() as *const c_void,
-            PCWSTR(wide_query.as_ptr()),
-            &mut value_ptr,
-            &mut value_len,
-        )
-    }
-    .as_bool();
-    if !found || value_ptr.is_null() || value_len == 0 {
-        return None;
-    }
-
-    let value = unsafe {
-        let value_slice = std::slice::from_raw_parts(value_ptr as *const u16, value_len as usize);
-        String::from_utf16_lossy(value_slice)
-    };
-    let value = value.trim_matches('\0').trim();
-    (!value.is_empty()).then(|| value.to_owned())
-}
-
-/// Resolves the display name for an application group using AltTaber's fallback order.
-pub fn get_app_display_name(app_key: &str, representative_hwnd: HWND) -> String {
-    let module_path = app_key.split("::").next().unwrap_or(app_key).trim();
-    if let Some(description) = get_file_description(module_path) {
-        return description;
-    }
-
-    let executable_name = Path::new(module_path)
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .map(str::trim)
-        .filter(|name| !name.is_empty());
-    if let Some(name) = executable_name {
-        return name.to_owned();
-    }
-
-    let title = get_window_title(representative_hwnd);
-    if !title.trim().is_empty() {
-        return title;
-    }
-
-    debug!("application display name unavailable: key={app_key}");
-    String::new()
 }
 
 pub fn get_owner_window(hwnd: HWND) -> HWND {
